@@ -1,92 +1,126 @@
-# My Learning Log
+main goal isn't just to build a working project, I want to change how I approach software engineering, moving from jumping straight into coding to thinking about the design first
 
-making a Dropbox clone to understand how backend systems and file synchronization work.
 
-throughs and checklist and learnings
+so I am trying to understand why we make certain decisions, how to structure a system, and how to think about problems before implementing them.
 
 ## Progress Checklist
-
 ### Backend
-- [x] Set up FastAPI
-- [x] PostgreSQL
-- [x] database models
-- [ ] understand how Alembic migrations work (not so much watch one more video)
-- [x] file upload and download
-- [x] file versioning
-- [x] content hashing
-- [x] soft deletion
-- [x] change journal
-After Meeting
-- [x] Refactor into controller, service, and repository layers
-- [] do learnign and readme files
-- [] pull request github
-- [] do endpoints for forlder handling (just like the ones done with files)
 
-### Sync (client)
-- [x] Create an endpoint to retrieve changes
-- [ ] Build a local sync client
+- [x] Set up FastAPI
+- [x] Set up PostgreSQL
+- [x] Design database models
+- [x] Set up Alembic migrations
+- [x] Understand how Alembic works internally (still need another explanation)
+- [x] File upload and download
+- [x] Basic file versioning structure
+- [x] Content hashing using SHA-256
+- [x] Soft deletion in the database design
+- [x] Change journal
+- [x] Separate API, service, database, and storage logic
+- [x] Write automated tests (16 passing)
+
+### Client and Sync
+
+- [x] Build a basic Python client that can push and pull files
 - [ ] Detect local file changes
-- [ ] Sync between two clients
+- [ ] Automatically sync between two clients
 - [ ] Handle offline changes
 - [ ] Handle conflicts
+- [ ] Add file updates, deletion, and renaming
 
-## understadnings
+### Other Things To Do
 
-### File Versioning
-*instead of replacing the old file when someone uploads an update I can keep the previous version and save the new one separately and have numbers continue instead of going back
+- [ ] Add folder handling
 
-*soft deletion to help in the process of rich versioning towards end of project
+## Learning to Think About Design First
 
-### no locking mechanism
-check whether the file has changed before allowing an update, instead of habing a lock system when client is editing a file
+biggest thing I'm trying to improve, my approach to projects was usually to figure out what needed to be done and start coding until it worked.
 
-## struggles
-managed to use migrations but still need to understand how they work internally. Planning to watch another explanation.
+but now I'm trying to understand the problem first and think about how the different parts of the system should work together
 
-following design principles (modules, services, controllers...)
+### 1. Breaking the system into smaller parts
 
-not very familiar with using git throughout development.
-need to remember to use the git workflow regularly (commit, push, pull, and PRs) 
+Instead of treating the Dropbox clone as one big project, I broke it down into components:
+
+- Backend API
+- Database for metadata
+- Storage for file contents
+- Service layer for the actual logic
+- Client for uploading and downloading files
+- Sync engine (later)
+
+This helped me understand what each component is responsible for and how they communicate.
+
+### 2. Database design decisions
+
+When designing the database, I learned that choosing the right data types and constraints matters, not just deciding what tables to create.
+
+**UUIDv7 vs UUIDv4**
+
+used UUIDv7 for file and file version IDs instead of UUIDv4.
+
+- UUIDv4 generates random IDs, so new records are inserted into different places in the database index.
+- UUIDv7 includes a timestamp, meaning IDs are roughly ordered by creation time.
+- This can improve index performance because new IDs are generally inserted near each other instead of randomly.
+
+UUIDv7 still provides unique identifiers without needing the database to generate sequential IDs.
+
+database design isnt just about storing data, but ragther the IDs, constraints, and relationships we choose affect performance, consistency, and how the rest of the system works.
+
+### 3. Separating responsibilities
+
+why we did we need different layers instead of putting everything in the API? cuz it makes it easier to change or test one part without affecting everything else.
+
+- API: receives requests and sends responses.
+- Service: handles the file operations and rules.
+- Database: stores file information.
+- Storage: saves the actual file content.
+
+### 4. Thinking about failures before they happen
+what happens when something goes wrong? many what if scnearios start pooping up when thinking during the code development like:
+
+- What if the upload succeeds but the response gets lost?
+- What if two clients upload to the same path at the same time?
+- What if the database fails halfway through saving a file?
+- What if two clients edit the same file?
+
+designing a system means thinking about failure cases, not just the normal flow of events
+
+### 5. Tactical vs. strategic programming
+
+From *A Philosophy of Software Design*, I'm learning the difference between tactical and strategic programming.
+
+Tactical programming focuses on getting the immediate task working, even if the design becomes more complicated later.
+
+Strategic programming means spending more time thinking about the design and keeping the system understandable as it grows.
+
+I'm trying to stop asking only "How do I code this?" and start asking "How should this work, and why?"
+
+I still find this difficult, but it's something I want to improve throughout the internship.
 
 
+## 6. Idempotency
+used a unique request_id for each upload so the server can recognize retries
 
-## Distributed Systems/Dynamo Paper
+If the same request ID is sent again with the same data, the server returns the original result instead of creating another file.
 
-how distributed storage systems handle data across multiple servers.
+If the same request ID is used with different data, the server rejects it
 
-### Concepts I Studied
+We also use a request fingerprint to check whether the repeated request actually contains the same data, because network failures can happen after the server processes a request but before the client receives the response
 
-- [x] 1 consistent hashing
-- [x] 2 vector clocks
-- [x] 3 hinted handoff
-- [x] 4 merkel trees
-- [x] 5 gossip protocol
-- [x] 6 partion and placement
+need to design for retries, not assume every request will succeed and return a response the first time
 
+### Testing
 
-1- instead of stroing one one server, we distribute it across multiple servers using a hash ring.
-when we add or remove a server, only some of the data needs to move instead of reorganizing everything.
+We wrote tests for storage, file creation, API endpoints, and the Python client.
 
-2- track different versions of data and understand which changes happened before others.
-two servers update the same data independently vector clocks can help detect that the versions conflict, and if they edit the same one we can know which is done before the other.
+i can test the service without starting FastAPI and use a separate test database to avoid affecting development data.
 
-why software systems avoid phyicsal wallclocks
-becauae the hardware clock drifts and there are network delays which make wall clocks unreliable 
+Current result: **16 tests passing**.
 
+## Struggles / Things I Need to Work On
 
-3- server is temporarily unavailable, another server can hold its data.
-omce it back the data is handed over  back to it
-
-
-4- tree made of hashes that helps servers compare their stored data 
-they compare hashes to find which parts are different and need synchronization, instead of comparing everything all together
-
-
-5- servers communicate with each other to share information about which servers are available, no need ofr a central server
-
-
-6- partioning (dividing data into smaller groups) and distributing them across servers
-
-use consistent hashing to decide where the data should be stored (placement)
-
-These are the concepts ive understood from dynamo
+- **System design:** I sometimes understand the coding part but struggle with deciding how the system should be structured.
+- **Design principles:** Still learning how to separate responsibilities and avoid unnecessary complexity.
+- **Git:** Need to get used to committing, pushing, pulling, and creating PRs regularly instead of waiting until the end.
+- **Thinking before coding:** I still tend to jump into implementation instead of fully thinking through the design first, so I need to get better at making design decisions on my own, explaining why I chose a certain approach, and thinking about the system as a whole instead of just individual functions.
