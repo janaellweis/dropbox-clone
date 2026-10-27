@@ -143,7 +143,7 @@ We wrote tests for storage, file creation, API endpoints, the change journal and
 
 i can test the service without starting FastAPI and use a separate test database to avoid affecting development data. also tested situations like stale versions, repeated requests, missing files, and concurrent operations.
 
-Current result: 55 tests passing.
+Current result: 37 tests passing.
 
 ## Struggles / Things I Need to Work On
 
