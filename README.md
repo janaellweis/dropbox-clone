@@ -23,3 +23,40 @@ The next step is completing the smart client so that changes made in one local f
 This includes detecting local changes, handling conflicts, and making sure uploads, downloads, deletions, and renames are synchronized correctly between clients.
 
 After that, I'll test the complete system using two client folders and prepare a final demo.
+
+
+Set Up and Running
+
+1. Set up the project
+
+git clone https://github.com/janaellweis/dropbox-clone.git
+cd dropbox-clone
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+2. Start the database
+docker compose up -d
+3. Run the migrations
+alembic upgrade head
+4. Start the backend
+uvicorn backend.main:app --reload
+The API will be available at http://127.0.0.1:8000/docs.
+# Testing
+
+I wrote tests for file storage, backend services, API endpoints, the change journal, and the Python client.
+
+The tests cover situations like repeated requests, outdated versions, transaction failures, and concurrent operations.
+
+To run the tests, first create the separate test database and apply the migrations:
+
+docker compose exec db psql -U dropbox -d postgres -c "CREATE DATABASE dropbox_test;"
+DATABASE_URL=postgresql+psycopg://dropbox:dropbox_dev@localhost:5432/dropbox_test alembic upgrade head
+python -m pytest -q
+ruff check .
+
+Current result: 35 tests passing.
+
+# Next Steps
+
+The next step is completing the smart sync client so changes made in one folder can automatically synchronize with another through the server.
