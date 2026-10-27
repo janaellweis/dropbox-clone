@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Local blob storage
+data/
+
+# Local test files
+test-upload.txt
+downloaded.txt
+client-downloaded.txt
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
