@@ -4,7 +4,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -13,6 +12,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid6 import uuid7
@@ -33,10 +33,10 @@ class File(Base):
         nullable=False,
     )
 
-    is_deleted: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -57,7 +57,7 @@ class File(Base):
             "uq_files_active_key",
             "key",
             unique=True,
-            postgresql_where=is_deleted.is_(False),
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 

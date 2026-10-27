@@ -17,7 +17,7 @@ so I am trying to understand why we make certain decisions, how to structure a s
 - [x] Soft deletion in the database design
 - [x] Change journal
 - [x] Separate API, service, database, and storage logic
-- [x] Write automated tests (16 passing)
+
 
 ### Client and Sync
 
@@ -47,7 +47,7 @@ Instead of treating the Dropbox clone as one big project, I broke it down into c
 - Storage for file contents
 - Service layer for the actual logic
 - Client for uploading and downloading files
-- Sync engine (later)
+- Sync engine (next)
 
 This helped me understand what each component is responsible for and how they communicate.
 
@@ -94,7 +94,7 @@ Tactical programming focuses on getting the immediate task working, even if the 
 
 Strategic programming means spending more time thinking about the design and keeping the system understandable as it grows.
 
-I'm trying to stop asking only "How do I code this?" and start asking "How should this work, and why?"
+I'm trying to start asking "How should this work, and why?"
 
 I still find this difficult, but it's something I want to improve throughout the internship.
 
@@ -110,13 +110,40 @@ We also use a request fingerprint to check whether the repeated request actually
 
 need to design for retries, not assume every request will succeed and return a response the first time
 
+## 7. Optimistic concurrency control
+
+Major problem to tackle was what happens when two clients edit the same file.
+
+"expected_version" to check whether the client is updating the version it originally read.
+
+so ifthe file has already changed, the server rejects the outdated update instead of silently overwriting newer content.
+
+## 8. Change Journla
+
+change journal to record operations such as CREATE, UPDATE, DELETE, and RENAME.
+
+for the clients to request updates since their last checkpoint.
+
+added pagination so clients can retrieve changes in smaller batches.
+
+the order of journal entries matters so clients should not receive changes in the wrong order
+
+
+## 9. Database Transactions
+
+database operations need to happen together, updating a file can involve creating a new version, updating its metadata, and recording an event in the journal.
+
+if one database operation fails, we don't want the others to remain partially committed.
+
+Transactions allow the database changes to succeed or fail together.
+
 ### Testing
 
-We wrote tests for storage, file creation, API endpoints, and the Python client.
+We wrote tests for storage, file creation, API endpoints, the change journal and the Python client.
 
-i can test the service without starting FastAPI and use a separate test database to avoid affecting development data.
+i can test the service without starting FastAPI and use a separate test database to avoid affecting development data. also tested situations like stale versions, repeated requests, missing files, and concurrent operations.
 
-Current result: **16 tests passing**.
+Current result: 55 tests passing.
 
 ## Struggles / Things I Need to Work On
 
@@ -124,3 +151,4 @@ Current result: **16 tests passing**.
 - **Design principles:** Still learning how to separate responsibilities and avoid unnecessary complexity.
 - **Git:** Need to get used to committing, pushing, pulling, and creating PRs regularly instead of waiting until the end.
 - **Thinking before coding:** I still tend to jump into implementation instead of fully thinking through the design first, so I need to get better at making design decisions on my own, explaining why I chose a certain approach, and thinking about the system as a whole instead of just individual functions.
+

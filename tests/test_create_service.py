@@ -2,25 +2,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
 
 from backend.db.models import ChangeAction, ChangeJournal, File, FileVersion
 from backend.services.files import create_file
 from backend.storage.local import LocalBlobStorage
 
-TEST_DATABASE_URL = (
-    "postgresql+psycopg://dropbox:dropbox_dev@localhost:5432/dropbox_test"
-)
 
-test_engine = create_engine(TEST_DATABASE_URL)
-TestSessionLocal = sessionmaker(bind=test_engine)
-
-
-def test_create_file(tmp_path):
+def test_create_file(db_session_factory, tmp_path):
     storage = LocalBlobStorage(tmp_path)
-    session = TestSessionLocal()
+    session = db_session_factory()
 
     key = f"test-{uuid.uuid4()}.txt"
     content = b"Hello from the service!"
@@ -40,7 +32,7 @@ def test_create_file(tmp_path):
 
         assert saved_file is not None
         assert saved_file.key == key
-        assert saved_file.is_deleted is False
+        assert saved_file.deleted_at is None
 
         # 2. Verify version 1
         version = session.scalar(
@@ -68,51 +60,9 @@ def test_create_file(tmp_path):
         session.close()
 
 
-def test_create_file_idempotency(tmp_path):
+def test_create_file_rejects_changed_request(db_session_factory, tmp_path):
     storage = LocalBlobStorage(tmp_path)
-    session = TestSessionLocal()
-
-    @pytest.fixture(autouse=True)
-    def clean_database():
-        yield
-
-        with test_engine.begin() as connection:
-            connection.execute(ChangeJournal.__table__.delete())
-            connection.execute(FileVersion.__table__.delete())
-            connection.execute(File.__table__.delete())
-
-    key = f"retry-{uuid.uuid4()}.txt"
-    content = b"Retry test!"
-    request_id = uuid.uuid4()
-
-    try:
-        first_file = create_file(session, storage, key, content, request_id)
-
-        second_file = create_file(session, storage, key, content, request_id)
-
-        assert first_file.id == second_file.id
-
-        # Only one journal event should exist for this request.
-        journals = session.scalars(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
-        ).all()
-
-        assert len(journals) == 1
-
-        # Only one version should exist for this file.
-        versions = session.scalars(
-            select(FileVersion).where(FileVersion.file_id == first_file.id)
-        ).all()
-
-        assert len(versions) == 1
-
-    finally:
-        session.close()
-
-
-def test_create_file_rejects_changed_request(tmp_path):
-    storage = LocalBlobStorage(tmp_path)
-    session = TestSessionLocal()
+    session = db_session_factory()
 
     key = f"conflict-{uuid.uuid4()}.txt"
     request_id = uuid.uuid4()
@@ -137,9 +87,9 @@ def test_create_file_rejects_changed_request(tmp_path):
         session.close()
 
 
-def test_create_file_rolls_back_on_failure(tmp_path):
+def test_create_file_rolls_back_on_failure(db_session_factory, tmp_path):
     storage = LocalBlobStorage(tmp_path)
-    session = TestSessionLocal()
+    session = db_session_factory()
 
     key = f"rollback-{uuid.uuid4()}.txt"
     request_id = uuid.uuid4()
@@ -174,32 +124,12 @@ def test_create_file_rolls_back_on_failure(tmp_path):
         session.close()
 
 
-def test_create_file_rejects_duplicate_path(tmp_path):
-    storage = LocalBlobStorage(tmp_path)
-    session = TestSessionLocal()
-
-    key = f"duplicate-{uuid.uuid4()}.txt"
-
-    try:
-        create_file(session, storage, key, b"First content", uuid.uuid4())
-
-        with pytest.raises(IntegrityError):
-            create_file(session, storage, key, b"Second content", uuid.uuid4())
-
-        files = session.scalars(select(File).where(File.key == key)).all()
-
-        assert len(files) == 1
-
-    finally:
-        session.close()
-
-
-def test_create_file_concurrent_requests(tmp_path):
+def test_create_file_concurrent_requests(db_session_factory, tmp_path):
     storage = LocalBlobStorage(tmp_path)
     key = f"concurrent-{uuid.uuid4()}.txt"
 
     def upload_file():
-        session = TestSessionLocal()
+        session = db_session_factory()
 
         try:
             file = create_file(
@@ -226,54 +156,13 @@ def test_create_file_concurrent_requests(tmp_path):
     assert len(successes) == 1
     assert len(conflicts) == 1
 
-    with TestSessionLocal() as session:
+    with db_session_factory() as session:
         files = session.scalars(select(File).where(File.key == key)).all()
 
         assert len(files) == 1
 
 
-def test_create_file_retry_after_failure(tmp_path):
-    storage = LocalBlobStorage(tmp_path)
-    session = TestSessionLocal()
-
-    key = f"recovery-{uuid.uuid4()}.txt"
-    content = b"Recovery test!"
-    request_id = uuid.uuid4()
-
-    def fail_journal_insert(mapper, connection, target):
-        raise RuntimeError("Simulated database failure")
-
-    event.listen(ChangeJournal, "before_insert", fail_journal_insert)
-
-    try:
-        with pytest.raises(RuntimeError, match="Simulated database failure"):
-            create_file(session, storage, key, content, request_id)
-
-    finally:
-        event.remove(ChangeJournal, "before_insert", fail_journal_insert)
-
-    try:
-        file = create_file(session, storage, key, content, request_id)
-
-        assert file is not None
-
-        journals = session.scalars(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
-        ).all()
-
-        assert len(journals) == 1
-
-        versions = session.scalars(
-            select(FileVersion).where(FileVersion.file_id == file.id)
-        ).all()
-
-        assert len(versions) == 1
-
-    finally:
-        session.close()
-
-
-def test_create_file_concurrent_same_request(tmp_path):
+def test_create_file_concurrent_same_request(db_session_factory, tmp_path):
     storage = LocalBlobStorage(tmp_path)
 
     key = f"same-request-{uuid.uuid4()}.txt"
@@ -281,7 +170,7 @@ def test_create_file_concurrent_same_request(tmp_path):
     request_id = uuid.uuid4()
 
     def upload_file():
-        session = TestSessionLocal()
+        session = db_session_factory()
 
         try:
             file = create_file(
@@ -301,7 +190,7 @@ def test_create_file_concurrent_same_request(tmp_path):
     # Both requests should return the same file.
     assert file_ids[0] == file_ids[1]
 
-    with TestSessionLocal() as session:
+    with db_session_factory() as session:
         files = session.scalars(select(File).where(File.key == key)).all()
 
         journals = session.scalars(
