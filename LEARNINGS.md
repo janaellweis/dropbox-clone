@@ -144,3 +144,14 @@ Transactions allow the database changes to succeed or fail together.
 - **Git:** Need to get used to committing, pushing, pulling, and creating PRs regularly instead of waiting until the end.
 - **Thinking before coding:** I still tend to jump into implementation instead of fully thinking through the design first, so I need to get better at making design decisions on my own, explaining why I chose a certain approach, and thinking about the system as a whole instead of just individual functions.
 
+
+
+
+
+##### Client Side Implementation Learnigs
+Started working on how the client detects and keeps track of local files before synchronization.
+file scannign will be using the SHA-256 hashing to identify file contents and detect changes.
+the state manager will save file metadata and checkpoints so it can remember its progress between runs.
+the change file will be detecting local changes and renames from the actual synchronization process.
+
+a sync client needs to understand both the current files and their previously saved state to figure out what changed
