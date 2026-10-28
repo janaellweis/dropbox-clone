@@ -63,3 +63,62 @@ class DropboxClient:
 
         response.raise_for_status()
         return response.json()
+
+    def get_updates(self, since: int = 0, limit: int = 100) -> dict:
+        response = httpx.get(
+            f"{self.base_url}/updates",
+            params={"since": since, "limit": limit},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    def delete_file(
+        self,
+        file_id: str,
+        expected_version: int,
+        request_id: str | None = None,
+    ) -> dict:
+        request_id = request_id or str(uuid.uuid4())
+
+        response = httpx.delete(
+            f"{self.base_url}/files/{file_id}",
+            params={
+                "expected_version": expected_version,
+                "request_id": request_id,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def rename_file(
+        self,
+        file_id: str,
+        expected_key: str,
+        new_key: str,
+        expected_version: int,
+        request_id: str | None = None,
+    ) -> dict:
+        request_id = request_id or str(uuid.uuid4())
+
+        response = httpx.patch(
+            f"{self.base_url}/files/{file_id}/rename",
+            json={
+                "expected_key": expected_key,
+                "new_key": new_key,
+                "expected_version": expected_version,
+                "request_id": request_id,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_file_metadata(self, file_id: str) -> dict:
+        response = httpx.get(
+            f"{self.base_url}/files/{file_id}",
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()

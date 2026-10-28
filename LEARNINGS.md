@@ -4,7 +4,7 @@ main goal isn't just to build a working project, I want to change how I approach
 so I am trying to understand why we make certain decisions, how to structure a system, and how to think about problems before implementing them.
 
 ## Progress Checklist
-### Backend
+### serverside backend
 
 - [x] Set up FastAPI
 - [x] Set up PostgreSQL
@@ -42,7 +42,7 @@ but now I'm trying to understand the problem first and think about how the diffe
 
 Instead of treating the Dropbox clone as one big project, I broke it down into components:
 
-- Backend API
+- Backend Server Side API
 - Database for metadata
 - Storage for file contents
 - Service layer for the actual logic

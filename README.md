@@ -10,7 +10,7 @@ I'm trying to move from a tactical, code-first approach to a more design first a
 
 I started by designing the database structure, separating file metadata from actual file storage, and organizing the backend into different layers so each part has its own responsibility.
 
-I built the backend using FastAPI, PostgreSQL, and SQLAlchemy, with SHA-256 hashing for file storage.
+I built the server side backend using FastAPI, PostgreSQL, and SQLAlchemy, with SHA-256 hashing for file storage.
 
 The backend now supports uploading, downloading, updating, deleting, and renaming files. I also implemented file versioning, a change journal to track updates, optimistic concurrency control to prevent outdated changes from overwriting newer ones, and idempotency to safely handle repeated requests.
 
@@ -57,6 +57,5 @@ ruff check .
 
 Current result: 35 tests passing.
 
-# Next Steps
-
+# Next Stepss
 The next step is completing the smart sync client so changes made in one folder can automatically synchronize with another through the server.
