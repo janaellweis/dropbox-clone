@@ -60,3 +60,11 @@ Current result: 35 tests passing.
 # Next Steps
 
 The next step is completing the smart sync client so changes made in one folder can automatically synchronize with another through the server.
+
+
+
+###### Client Side Implementation PR 3
+
+Started implementing the client-side file tracking components. Added a local file scanner that uses SHA-256 hashing, state management to remember file metadata and synchronization checkpoints, and local change detection to identify file changes and renames.
+
+Next step is connecting these components to the synchronization engine.
