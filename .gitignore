@@ -24,3 +24,9 @@ client-downloaded.txt
 # IDE
 .vscode/
 .idea/
+
+#backup
+*.bak
+
+sync_demo_*/
+sync_test_*/
