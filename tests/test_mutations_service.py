@@ -1,9 +1,10 @@
+import io
 import uuid
 
 import pytest
 from sqlalchemy import event, select
 
-from backend.db.models import ChangeAction, ChangeJournal, File, FileVersion
+from backend.db.models import ChangeAction, File, FileVersion, OutboxEvent
 from backend.services.file_rules import FileVersionConflictError
 from backend.services.files import create_file
 from backend.services.mutations import delete_file, rename_file, update_file
@@ -19,7 +20,7 @@ def test_delete_file_preserves_history(db_session_factory, tmp_path):
             session,
             storage,
             f"delete-history-{uuid.uuid4()}.txt",
-            b"Original content",
+            io.BytesIO(b"Original content"),
             uuid.uuid4(),
         )
         file_id = saved_file.id
@@ -45,13 +46,13 @@ def test_delete_file_preserves_history(db_session_factory, tmp_path):
         assert storage.read(versions[0].content_hash) == b"Original content"
 
         journal = session.scalar(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         )
 
         assert journal is not None
         assert journal.action == ChangeAction.DELETE
         assert journal.file_id == file_id
-        assert journal.version_number == 1
+        assert journal.payload["version_number"] == 1
 
 
 def test_delete_file_stale_version_has_no_effect(db_session_factory, tmp_path):
@@ -63,7 +64,7 @@ def test_delete_file_stale_version_has_no_effect(db_session_factory, tmp_path):
             session,
             storage,
             f"delete-stale-{uuid.uuid4()}.txt",
-            b"Hello",
+            io.BytesIO(b"Hello"),
             uuid.uuid4(),
         )
         file_id = saved_file.id
@@ -72,7 +73,7 @@ def test_delete_file_stale_version_has_no_effect(db_session_factory, tmp_path):
             session,
             storage,
             file_id,
-            b"Updated",
+            io.BytesIO(b"Updated"),
             1,
             uuid.uuid4(),
         )
@@ -85,7 +86,7 @@ def test_delete_file_stale_version_has_no_effect(db_session_factory, tmp_path):
         assert saved_file.deleted_at is None
 
         events = session.scalars(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         ).all()
 
         assert events == []
@@ -100,39 +101,39 @@ def test_delete_file_rolls_back_on_journal_failure(db_session_factory, tmp_path)
             session,
             storage,
             f"delete-rollback-{uuid.uuid4()}.txt",
-            b"Hello",
+            io.BytesIO(b"Hello"),
             uuid.uuid4(),
         )
         file_id = saved_file.id
 
-        def fail_delete_journal(mapper, connection, target):
+        def fail_delete_outbox(mapper, connection, target):
             if target.action == ChangeAction.DELETE:
-                raise RuntimeError("Simulated delete journal failure")
+                raise RuntimeError("Simulated delete outbox failure")
 
         event.listen(
-            ChangeJournal,
+            OutboxEvent,
             "before_insert",
-            fail_delete_journal,
+            fail_delete_outbox,
         )
 
         try:
             with pytest.raises(
                 RuntimeError,
-                match="Simulated delete journal failure",
+                match="Simulated delete outbox failure",
             ):
                 delete_file(session, file_id, 1, request_id)
         finally:
             event.remove(
-                ChangeJournal,
+                OutboxEvent,
                 "before_insert",
-                fail_delete_journal,
+                fail_delete_outbox,
             )
 
         saved_file = session.get(File, file_id)
         assert saved_file.deleted_at is None
 
         journal = session.scalar(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         )
         assert journal is None
 
@@ -146,7 +147,7 @@ def test_rename_preserves_version_and_records_journal(db_session_factory, tmp_pa
             session,
             storage,
             f"rename-original-{uuid.uuid4()}.txt",
-            b"Original content",
+            io.BytesIO(b"Original content"),
             uuid.uuid4(),
         )
         file_id = saved_file.id
@@ -173,14 +174,14 @@ def test_rename_preserves_version_and_records_journal(db_session_factory, tmp_pa
         assert storage.read(versions[0].content_hash) == b"Original content"
 
         journal = session.scalar(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         )
 
         assert journal is not None
         assert journal.action == ChangeAction.RENAME
-        assert journal.old_path == original_key
-        assert journal.path == new_key
-        assert journal.version_number == 1
+        assert journal.payload["old_path"] == original_key
+        assert journal.payload["path"] == new_key
+        assert journal.payload["version_number"] == 1
 
 
 def test_rename_stale_path_does_not_create_event(db_session_factory, tmp_path):
@@ -192,7 +193,7 @@ def test_rename_stale_path_does_not_create_event(db_session_factory, tmp_path):
             session,
             storage,
             f"rename-stale-{uuid.uuid4()}.txt",
-            b"Hello",
+            io.BytesIO(b"Hello"),
             uuid.uuid4(),
         )
         file_id = saved_file.id
@@ -221,7 +222,7 @@ def test_rename_stale_path_does_not_create_event(db_session_factory, tmp_path):
         assert session.get(File, file_id).key == first_new_key
 
         rejected_events = session.scalars(
-            select(ChangeJournal).where(ChangeJournal.request_id == rejected_request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == rejected_request_id)
         ).all()
 
         assert rejected_events == []
@@ -236,26 +237,26 @@ def test_rename_rolls_back_on_journal_failure(db_session_factory, tmp_path):
             session,
             storage,
             f"rename-rollback-{uuid.uuid4()}.txt",
-            b"Hello",
+            io.BytesIO(b"Hello"),
             uuid.uuid4(),
         )
         file_id = saved_file.id
         original_key = saved_file.key
 
-        def fail_rename_journal(mapper, connection, target):
+        def fail_rename_outbox(mapper, connection, target):
             if target.action == ChangeAction.RENAME:
-                raise RuntimeError("Simulated rename journal failure")
+                raise RuntimeError("Simulated rename outbox failure")
 
         event.listen(
-            ChangeJournal,
+            OutboxEvent,
             "before_insert",
-            fail_rename_journal,
+            fail_rename_outbox,
         )
 
         try:
             with pytest.raises(
                 RuntimeError,
-                match="Simulated rename journal failure",
+                match="Simulated rename outbox failure",
             ):
                 rename_file(
                     session,
@@ -267,15 +268,15 @@ def test_rename_rolls_back_on_journal_failure(db_session_factory, tmp_path):
                 )
         finally:
             event.remove(
-                ChangeJournal,
+                OutboxEvent,
                 "before_insert",
-                fail_rename_journal,
+                fail_rename_outbox,
             )
 
         assert session.get(File, file_id).key == original_key
 
         journal = session.scalar(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         )
 
         assert journal is None

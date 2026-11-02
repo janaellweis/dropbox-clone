@@ -1,18 +1,10 @@
 import uuid
+from pathlib import PurePosixPath
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from backend.core.exceptions import FileRecordNotFoundError, FileVersionConflictError
 from backend.db.models import FileVersion
-
-
-class FileVersionConflictError(Exception):
-    """The client's expected version is not the current server version."""
-
-
-def lock_journal(session: Session) -> None:
-    """Serialize journal writes until the current transaction completes."""
-    session.execute(text("SELECT pg_advisory_xact_lock(742001)"))
 
 
 def require_latest_version(
@@ -29,7 +21,7 @@ def require_latest_version(
     )
 
     if latest is None:
-        raise FileNotFoundError("File version not found")
+        raise FileRecordNotFoundError("File version not found")
 
     if latest.version_number != expected_version:
         raise FileVersionConflictError("File version is outdated")
@@ -38,9 +30,20 @@ def require_latest_version(
 
 
 def is_valid_file_key(key: str) -> bool:
-    """Accept relative, slash-separated file paths without traversal."""
+    """Validate a relative, slash-separated file key."""
+    if not key or len(key) > 1024:
+        return False
+
+    if "\\" in key:
+        return False
+
+    if any(ord(char) < 32 or ord(char) == 127 for char in key):
+        return False
+
+    path = PurePosixPath(key)
+
     return (
-        bool(key)
-        and "\\" not in key
-        and all(part not in ("", ".", "..") for part in key.split("/"))
+        not path.is_absolute()
+        and str(path) == key
+        and all(part != ".." for part in path.parts)
     )

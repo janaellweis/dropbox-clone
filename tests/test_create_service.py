@@ -1,11 +1,12 @@
+import io
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from sqlalchemy import event, select
-from sqlalchemy.exc import IntegrityError
 
-from backend.db.models import ChangeAction, ChangeJournal, File, FileVersion
+from backend.core.exceptions import FileAlreadyExistsError, RequestConflictError
+from backend.db.models import ChangeAction, File, FileVersion, OutboxEvent
 from backend.services.files import create_file
 from backend.storage.local import LocalBlobStorage
 
@@ -23,7 +24,7 @@ def test_create_file(db_session_factory, tmp_path):
             session=session,
             storage=storage,
             key=key,
-            content=content,
+            content=io.BytesIO(content),
             request_id=request_id,
         )
 
@@ -48,13 +49,13 @@ def test_create_file(db_session_factory, tmp_path):
 
         # 4. Verify the journal entry
         journal = session.scalar(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         )
 
         assert journal is not None
         assert journal.file_id == file.id
         assert journal.action == ChangeAction.CREATE
-        assert journal.version_number == 1
+        assert journal.payload["version_number"] == 1
 
     finally:
         session.close()
@@ -68,12 +69,14 @@ def test_create_file_rejects_changed_request(db_session_factory, tmp_path):
     request_id = uuid.uuid4()
 
     try:
-        original_file = create_file(session, storage, key, b"Hello", request_id)
+        original_file = create_file(
+            session, storage, key, io.BytesIO(b"Hello"), request_id
+        )
 
         with pytest.raises(
-            ValueError, match="Request ID reused with different content"
+            RequestConflictError, match="Request ID reused with different content"
         ):
-            create_file(session, storage, key, b"Goodbye", request_id)
+            create_file(session, storage, key, io.BytesIO(b"Goodbye"), request_id)
 
         # The original file should remain unchanged.
         versions = session.scalars(
@@ -94,18 +97,18 @@ def test_create_file_rolls_back_on_failure(db_session_factory, tmp_path):
     key = f"rollback-{uuid.uuid4()}.txt"
     request_id = uuid.uuid4()
 
-    def fail_journal_insert(mapper, connection, target):
-        raise RuntimeError("Simulated journal failure")
+    def fail_outbox_insert(mapper, connection, target):
+        raise RuntimeError("Simulated outbox failure")
 
-    event.listen(ChangeJournal, "before_insert", fail_journal_insert)
+    event.listen(OutboxEvent, "before_insert", fail_outbox_insert)
 
     try:
-        with pytest.raises(RuntimeError, match="Simulated journal failure"):
+        with pytest.raises(RuntimeError, match="Simulated outbox failure"):
             create_file(
                 session,
                 storage,
                 key,
-                b"Rollback test!",
+                io.BytesIO(b"Rollback test!"),
                 request_id,
             )
 
@@ -115,12 +118,12 @@ def test_create_file_rolls_back_on_failure(db_session_factory, tmp_path):
 
         # No journal entry should remain.
         journal = session.scalar(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         )
         assert journal is None
 
     finally:
-        event.remove(ChangeJournal, "before_insert", fail_journal_insert)
+        event.remove(OutboxEvent, "before_insert", fail_outbox_insert)
         session.close()
 
 
@@ -136,12 +139,12 @@ def test_create_file_concurrent_requests(db_session_factory, tmp_path):
                 session,
                 storage,
                 key,
-                b"Concurrent content",
+                io.BytesIO(b"Concurrent content"),
                 uuid.uuid4(),
             )
             return ("success", file.id)
 
-        except IntegrityError:
+        except FileAlreadyExistsError:
             return ("conflict", None)
 
         finally:
@@ -177,7 +180,7 @@ def test_create_file_concurrent_same_request(db_session_factory, tmp_path):
                 session,
                 storage,
                 key,
-                content,
+                io.BytesIO(content),
                 request_id,
             )
             return file.id
@@ -194,7 +197,7 @@ def test_create_file_concurrent_same_request(db_session_factory, tmp_path):
         files = session.scalars(select(File).where(File.key == key)).all()
 
         journals = session.scalars(
-            select(ChangeJournal).where(ChangeJournal.request_id == request_id)
+            select(OutboxEvent).where(OutboxEvent.request_id == request_id)
         ).all()
 
         versions = session.scalars(

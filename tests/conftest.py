@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.db.models import ChangeJournal, File, FileVersion
+from backend.db.database import AppSession
+from backend.db.models import ChangeJournal, File, FileVersion, OutboxEvent
 from backend.dependencies import get_db, get_storage
 from backend.main import app
 from backend.storage.local import LocalBlobStorage
@@ -13,7 +14,7 @@ TEST_DATABASE_URL = (
 )
 
 test_engine = create_engine(TEST_DATABASE_URL)
-TestSessionLocal = sessionmaker(bind=test_engine)
+TestSessionLocal = sessionmaker(bind=test_engine, class_=AppSession)
 
 
 @pytest.fixture
@@ -46,9 +47,30 @@ def clean_test_database():
     def clean():
         with test_engine.begin() as connection:
             connection.execute(ChangeJournal.__table__.delete())
+            connection.execute(OutboxEvent.__table__.delete())
             connection.execute(FileVersion.__table__.delete())
             connection.execute(File.__table__.delete())
 
     clean()
     yield
     clean()
+
+@pytest.fixture
+def publish_outbox_events():
+    from backend.workers.outbox_worker import process_pending_events
+
+    def publish():
+        published = 0
+
+        while True:
+            with TestSessionLocal() as session:
+                count = process_pending_events(session)
+
+            if count == 0:
+                break
+
+            published += count
+
+        return published
+
+    return publish

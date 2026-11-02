@@ -1,5 +1,6 @@
 import hashlib
 import uuid
+from datetime import datetime
 
 from backend.db.models import FileVersion
 
@@ -18,6 +19,8 @@ def test_download_missing_blob_returns_500(
         files={"file": ("test.txt", content)},
     )
 
+    print("UPLOAD STATUS:", upload.status_code)
+    print("UPLOAD ERROR:", upload.json())
     assert upload.status_code == 200
     file_id = upload.json()["file_id"]
 
@@ -95,6 +98,11 @@ def test_list_file_versions(api_client):
     assert versions[0]["size"] == len(b"Version two")
     assert versions[1]["size"] == len(b"Version one")
 
+    for version in versions:
+        assert "created_at" in version
+        timestamp = datetime.fromisoformat(version["created_at"])
+        assert timestamp.tzinfo is not None
+
 
 def test_download_historical_version(api_client):
     upload = api_client.post(
@@ -157,3 +165,29 @@ def test_upload_rejects_invalid_path(api_client):
     )
 
     assert response.status_code == 400
+
+def test_upload_duplicate_path_returns_409(api_client):
+    key = f"duplicate-{uuid.uuid4()}.txt"
+
+    first_upload = api_client.post(
+        "/files",
+        data={
+            "key": key,
+            "request_id": str(uuid.uuid4()),
+        },
+        files={"file": ("document.txt", b"Original content")},
+    )
+
+    assert first_upload.status_code == 200
+
+    second_upload = api_client.post(
+        "/files",
+        data={
+            "key": key,
+            "request_id": str(uuid.uuid4()),
+        },
+        files={"file": ("document.txt", b"Different content")},
+    )
+
+    assert second_upload.status_code == 409
+    assert second_upload.json()["detail"] == "File path already exists"

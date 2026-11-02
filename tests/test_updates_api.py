@@ -1,7 +1,7 @@
 import uuid
 
 
-def test_updates_pagination(api_client):
+def test_updates_pagination(api_client, publish_outbox_events):
     for index in range(3):
         response = api_client.post(
             "/files",
@@ -12,6 +12,8 @@ def test_updates_pagination(api_client):
             files={"file": (f"journal-page-{index}.txt", b"Hello")},
         )
         assert response.status_code == 200
+
+    assert publish_outbox_events() == 3
 
     first_page = api_client.get("/updates", params={"since": 0, "limit": 2})
     assert first_page.status_code == 200
@@ -37,13 +39,15 @@ def test_updates_pagination(api_client):
     assert set(first_ids).isdisjoint(second_ids)
 
 
-def test_updates_checkpoint_returns_only_new_changes(api_client):
+def test_updates_checkpoint_returns_only_new_changes(api_client, publish_outbox_events):
     first = api_client.post(
         "/files",
         data={"key": "checkpoint-first.txt", "request_id": str(uuid.uuid4())},
         files={"file": ("checkpoint-first.txt", b"First")},
     )
     assert first.status_code == 200
+
+    assert publish_outbox_events() == 1
 
     initial = api_client.get("/updates")
     assert initial.status_code == 200
@@ -57,6 +61,8 @@ def test_updates_checkpoint_returns_only_new_changes(api_client):
     )
     assert second.status_code == 200
 
+    assert publish_outbox_events() == 1
+
     response = api_client.get("/updates", params={"since": checkpoint})
 
     assert response.status_code == 200
@@ -64,7 +70,7 @@ def test_updates_checkpoint_returns_only_new_changes(api_client):
     assert response.json()["updates"][0]["path"] == "checkpoint-second.txt"
 
 
-def test_updates_exact_page_size_has_no_more(api_client):
+def test_updates_exact_page_size_has_no_more(api_client, publish_outbox_events):
     for index in range(2):
         response = api_client.post(
             "/files",
@@ -75,6 +81,8 @@ def test_updates_exact_page_size_has_no_more(api_client):
             files={"file": (f"exact-page-{index}.txt", b"Hello")},
         )
         assert response.status_code == 200
+
+    assert publish_outbox_events() == 2
 
     response = api_client.get(
         "/updates",

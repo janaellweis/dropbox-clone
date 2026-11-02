@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     DateTime,
     Enum,
@@ -21,6 +22,13 @@ from backend.db.database import Base
 
 
 class File(Base):
+    event_sequence: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
     __tablename__ = "files"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -90,6 +98,11 @@ class FileVersion(Base):
         nullable=False,
     )
 
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
     __table_args__ = (
         UniqueConstraint(
             "file_id",
@@ -104,6 +117,82 @@ class ChangeAction(str, enum.Enum):
     UPDATE = "UPDATE"
     DELETE = "DELETE"
     RENAME = "RENAME"
+
+
+
+class OutboxStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class OutboxEvent(Base):
+    event_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False,
+    )
+
+    __tablename__ = "outbox_events"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "file_id",
+            "event_sequence",
+            name="uq_outbox_file_event_sequence",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid7,
+    )
+
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        unique=True,
+        nullable=False,
+    )
+
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id"),
+        nullable=False,
+    )
+
+    action: Mapped[ChangeAction] = mapped_column(
+        Enum(ChangeAction),
+        nullable=False,
+    )
+
+    payload: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+    )
+
+    status: Mapped[OutboxStatus] = mapped_column(
+        Enum(OutboxStatus),
+        nullable=False,
+        default=OutboxStatus.PENDING,
+    )
+
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 class ChangeJournal(Base):
@@ -148,4 +237,10 @@ class ChangeJournal(Base):
     request_fingerprint: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
+    )
+
+    outbox_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("outbox_events.id"),
+        unique=True,
+        nullable=True,
     )

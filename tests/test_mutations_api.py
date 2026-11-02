@@ -3,7 +3,7 @@ import uuid
 from backend.db.models import ChangeAction, ChangeJournal, FileVersion
 
 
-def test_update_file_success(api_client, db_session_factory):
+def test_update_file_success(api_client, db_session_factory, publish_outbox_events):
     request_id = str(uuid.uuid4())
 
     create_response = api_client.post(
@@ -29,6 +29,8 @@ def test_update_file_success(api_client, db_session_factory):
 
     assert response.status_code == 200
     assert response.json()["version"] == 2
+
+    assert publish_outbox_events() == 2
 
     with db_session_factory() as session:
         version = (
@@ -292,6 +294,7 @@ def test_rename_file_duplicate_path(api_client):
     )
 
     assert response.status_code == 409
+    assert response.json()["detail"] == "Destination path already exists"
     assert api_client.get(f"/files/{first_id}").json()["key"] == "rename-source.txt"
 
 

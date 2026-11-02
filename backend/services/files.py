@@ -1,58 +1,68 @@
-import hashlib
 import uuid
+from typing import BinaryIO
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.db.models import ChangeAction, ChangeJournal, File, FileVersion
-from backend.services.file_rules import lock_journal
+from backend.core.exceptions import (
+    FileAlreadyExistsError,
+    FileContentMissingError,
+    FileRecordNotFoundError,
+    RequestConflictError,
+)
+from backend.db.models import ChangeAction, File, FileVersion, OutboxEvent
+from backend.services.outbox import enqueue_event
 from backend.storage.local import LocalBlobStorage
+
+
+def find_existing_create(
+    session: Session,
+    request_id: uuid.UUID,
+    fingerprint: str,
+) -> File | None:
+    existing_request = (
+        session.query(OutboxEvent)
+        .filter_by(request_id=request_id)
+        .first()
+    )
+
+    if existing_request is None:
+        return None
+
+    if (
+        existing_request.payload["request_fingerprint"] != fingerprint
+        or existing_request.action != ChangeAction.CREATE
+    ):
+        raise RequestConflictError("Request ID reused with different content")
+
+    return (
+        session.query(File)
+        .execution_options(include_deleted=True)
+        .filter(File.id == existing_request.file_id)
+        .one()
+    )
 
 
 def create_file(
     session: Session,
     storage: LocalBlobStorage,
     key: str,
-    content: bytes,
+    content: BinaryIO,
     request_id: uuid.UUID,
 ) -> File:
-    fingerprint = hashlib.sha256(
-        b"CREATE\0" + key.encode("utf-8") + b"\0" + content
-    ).hexdigest()
+    fingerprint_prefix = b"CREATE\0" + key.encode("utf-8") + b"\0"
 
-    existing_request = (
-        session.query(ChangeJournal).filter_by(request_id=request_id).first()
+    content_hash, size, fingerprint = storage.save(
+        content,
+        fingerprint_prefix,
     )
 
-    if existing_request is not None:
-        if (
-            existing_request.request_fingerprint != fingerprint
-            or existing_request.action != ChangeAction.CREATE
-        ):
-            raise ValueError("Request ID reused with different content")
+    existing_file = find_existing_create(session, request_id, fingerprint)
 
-        return session.get(File, existing_request.file_id)
-
-    content_hash = storage.save(content)
+    if existing_file is not None:
+        return existing_file
 
     try:
-        lock_journal(session)
-
-        existing_request = (
-            session.query(ChangeJournal).filter_by(request_id=request_id).first()
-        )
-
-        if existing_request is not None:
-            if (
-                existing_request.request_fingerprint != fingerprint
-                or existing_request.action != ChangeAction.CREATE
-            ):
-                raise ValueError("Request ID reused with different content")
-
-            original_file_id = existing_request.file_id
-            session.rollback()
-            return session.get(File, original_file_id)
-
         saved_file = File(key=key)
         session.add(saved_file)
         session.flush()
@@ -61,38 +71,38 @@ def create_file(
             file_id=saved_file.id,
             version_number=1,
             content_hash=content_hash,
-            size=len(content),
+            size=size,
         )
         session.add(version)
 
-        journal = ChangeJournal(
+        enqueue_event(
+            session=session,
+            request_id=request_id,
             file_id=saved_file.id,
             action=ChangeAction.CREATE,
             path=key,
             version_number=1,
-            request_id=request_id,
-            request_fingerprint=fingerprint,
+            fingerprint=fingerprint,
         )
-        session.add(journal)
 
         session.commit()
         return saved_file
 
-    except IntegrityError:
+    except IntegrityError as exc:
         session.rollback()
 
-        existing_request = (
-            session.query(ChangeJournal).filter_by(request_id=request_id).first()
+        existing_file = find_existing_create(session, request_id, fingerprint)
+
+        if existing_file is not None:
+            return existing_file
+        constraint_name = getattr(
+            getattr(exc.orig, "diag", None),
+            "constraint_name",
+            None,
         )
 
-        if existing_request is not None:
-            if (
-                existing_request.request_fingerprint != fingerprint
-                or existing_request.action != ChangeAction.CREATE
-            ):
-                raise ValueError("Request ID reused with different content")
-
-            return session.get(File, existing_request.file_id)
+        if constraint_name == "uq_files_active_key":
+            raise FileAlreadyExistsError("File path already exists") from exc
 
         raise
 
@@ -100,44 +110,39 @@ def create_file(
         session.rollback()
         raise
 
-
-class FileContentMissingError(Exception):
-    """File metadata exists, but its content is missing from storage."""
-
-
 def get_file_content(
     session: Session,
     storage: LocalBlobStorage,
     file_id: uuid.UUID,
-) -> tuple[bytes, str]:
+) -> tuple[str, str]:
     saved_file, version = get_file_metadata(session, file_id)
 
-    try:
-        content = storage.read(version.content_hash)
-    except FileNotFoundError as exc:
-        raise FileContentMissingError("File content missing from storage") from exc
+    if not storage.exists(version.content_hash):
+        raise FileContentMissingError("File content missing from storage")
 
-    return content, saved_file.key
+    return version.content_hash, saved_file.key
 
 
 def get_file_metadata(
     session: Session,
     file_id: uuid.UUID,
 ) -> tuple[File, FileVersion]:
-    saved_file = session.get(File, file_id)
+    saved_file = (
+        session.query(File)
+        .filter(File.id == file_id)
+        .one_or_none()
+    )
 
-    if saved_file is None or saved_file.deleted_at is not None:
-        raise FileNotFoundError("File not found")
+    if saved_file is None:
+        raise FileRecordNotFoundError("File not found")
 
     latest_version = (
         session.query(FileVersion)
         .filter_by(file_id=file_id)
         .order_by(FileVersion.version_number.desc())
-        .first()
+        .limit(1)
+        .one()
     )
-
-    if latest_version is None:
-        raise FileNotFoundError("File version not found")
 
     return saved_file, latest_version
 
@@ -161,7 +166,7 @@ def get_file_version_content(
     storage: LocalBlobStorage,
     file_id: uuid.UUID,
     version_number: int,
-) -> tuple[bytes, str]:
+) -> tuple[str, str]:
     saved_file, _ = get_file_metadata(session, file_id)
 
     version = (
@@ -174,11 +179,9 @@ def get_file_version_content(
     )
 
     if version is None:
-        raise FileNotFoundError("File version not found")
+        raise FileRecordNotFoundError("File version not found")
 
-    try:
-        content = storage.read(version.content_hash)
-    except FileNotFoundError as exc:
-        raise FileContentMissingError("File content missing from storage") from exc
+    if not storage.exists(version.content_hash):
+        raise FileContentMissingError("File content missing from storage")
 
-    return content, saved_file.key
+    return version.content_hash, saved_file.key
