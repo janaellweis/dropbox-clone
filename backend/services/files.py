@@ -21,9 +21,7 @@ def find_existing_create(
     fingerprint: str,
 ) -> File | None:
     existing_request = (
-        session.query(OutboxEvent)
-        .filter_by(request_id=request_id)
-        .first()
+        session.query(OutboxEvent).filter_by(request_id=request_id).first()
     )
 
     if existing_request is None:
@@ -110,6 +108,7 @@ def create_file(
         session.rollback()
         raise
 
+
 def get_file_content(
     session: Session,
     storage: LocalBlobStorage,
@@ -127,11 +126,7 @@ def get_file_metadata(
     session: Session,
     file_id: uuid.UUID,
 ) -> tuple[File, FileVersion]:
-    saved_file = (
-        session.query(File)
-        .filter(File.id == file_id)
-        .one_or_none()
-    )
+    saved_file = session.query(File).filter(File.id == file_id).one_or_none()
 
     if saved_file is None:
         raise FileRecordNotFoundError("File not found")

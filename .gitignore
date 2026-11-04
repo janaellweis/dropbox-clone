@@ -30,3 +30,12 @@ client-downloaded.txt
 
 sync_demo_*/
 sync_test_*/
+
+# demo folders
+/demo_client_a/
+/demo_client_b/
+
+# Celery runtime files
+celerybeat-schedule*
+beat.log
+worker*.log

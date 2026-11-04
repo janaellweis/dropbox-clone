@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
@@ -24,10 +25,13 @@ def file_download_response(
     content_hash: str,
     key: str,
 ) -> StreamingResponse:
+    filename = Path(key).name
+    disposition = f"attachment; filename*=utf-8''{quote(filename, safe='')}"
+
     return StreamingResponse(
         storage.stream(content_hash),
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{Path(key).name}"'},
+        headers={"Content-Disposition": disposition},
     )
 
 

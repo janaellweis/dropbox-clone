@@ -1,6 +1,7 @@
 import hashlib
 import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
@@ -53,7 +54,7 @@ class LocalBlobStorage:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
 
-    def stream(self, content_hash: str):
+    def stream(self, content_hash: str) -> Iterator[bytes]:
         blob_path = self.root / content_hash
 
         with blob_path.open("rb") as file:

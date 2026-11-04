@@ -144,3 +144,81 @@ Transactions allow the database changes to succeed or fail together.
 - **Git:** Need to get used to committing, pushing, pulling, and creating PRs regularly instead of waiting until the end.
 - **Thinking before coding:** I still tend to jump into implementation instead of fully thinking through the design first, so I need to get better at making design decisions on my own, explaining why I chose a certain approach, and thinking about the system as a whole instead of just individual functions.
 
+
+### PR4
+## 10. Transactional Outbox Pattern
+
+how to reliably publish file changes without losing events? what happens if the server successfully updates a file but crashes before recording the change for other clients?
+
+the transactional outbox pattern ws used to solve this.
+
+intstead of publishing directly, the server saves the file changes and an outbox event in the same database transaction
+
+then the background worker(s) processes pending outbox events and adds them to the change journal
+
+This means the file operation and the event recording succeed or fail together, while publishing can happen later
+
+reliability isn't just about preventing errors but rather making sure the system can recover when something fails
+
+## 11. Partitioned Change Journal
+
+in the first phases, the change journal used a single sequence of events
+now,  we have four logical partitions and each with its own position counter.
+
+so events from different partitions would be published independently but still preserving the order of changes to the same file
+
+one transaction might receive ID 5 but commit after another transaction with ID 6 so if  a client assumes everything before ID 6 has already been committed, it could permanently miss event 5 (main issue of multiple workers in this phase)
+
+the partitioned journal uses row locking and committed positions to avoid this problem.
+
+so clients will track a checkpoint for each partition instead of relying on one global checkpoint
+
+## 12. PostgreSQL Row Locking
+
+to coordinate multiple background workers, we used `SELECT FOR UPDATE SKIP LOCKED`  so  when one worker locks a partition then another worker skips it and looks for an available partition
+
+This prevents workers from updating the same partition position simultaneously
+
+## 13. Redis and Celery
+
+Redis and Celery were used to to handle background event publishing
+
+Redis acts as the message broker, it stores tasks until Celery workers receive them
+
+Celery Beat schedules a publishing task every five seconds
+
+two Celery workers that independently take tasks from the same queue
+
+workers then read pending outbox events from PostgreSQL and publish them into the change journal
+
+Redis doesn't store the actual file changes or determine which events have been published its just responsible for delivering the tasks that tell workers to check for pending events.
+
+## 14. Batching
+
+the publishing function handled one event at a time but then added batch processing so Celery can handle up to 100 events per task instead of just one
+
+Each event is saved separately, so if something fails then the previously completed events wont be lost
+
+## Task RUnners, Task Managers, Daemon Processes
+different ways to run background tasks.
+
+- Task Runners: Execute tasks, such as processing pending events. (Workers)
+- Task Managers: Schedule and coordinate tasks, deciding when they should run. (Coordinator)
+- Daemon processes: Long-running background programs. 
+
+the celery workers and beat can run this way using nohup. we can also run the client synchronization engine as a background process.
+
+the Celery workers execute tasks while Celery Beat schedules them every five seconds.
+
+##  CDC and WAL
+- CDC (change data capture) is a way to detect incremental changes happening in a database
+
+-WAL (write ahead log) is a PostgreSQL log that records database changes and helps with crash recovery.
+
+Some CDC systems read the WAL to detect changes and send them to other systems.
+
+We learned about this as another approach to tracking changes, but our Dropbox clone uses a transactional outbox instead.
+
+## Pydantic
+
+it helps make sure incoming data follows the expected format before the application processes it

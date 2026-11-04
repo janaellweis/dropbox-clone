@@ -129,6 +129,32 @@ def update_file(
         session.commit()
         return version
 
+    except IntegrityError as exc:
+        session.rollback()
+
+        existing_request = (
+            session.query(OutboxEvent).filter_by(request_id=request_id).first()
+        )
+        if existing_request is not None:
+            if (
+                existing_request.action != ChangeAction.UPDATE
+                or existing_request.payload["request_fingerprint"] != fingerprint
+            ):
+                raise RequestConflictError(
+                    "Request ID reused with different operation"
+                ) from exc
+
+            return (
+                session.query(FileVersion)
+                .filter_by(
+                    file_id=existing_request.file_id,
+                    version_number=existing_request.payload["version_number"],
+                )
+                .one()
+            )
+
+        raise
+
     except Exception:
         session.rollback()
         raise
@@ -206,6 +232,25 @@ def delete_file(
         )
 
         session.commit()
+
+    except IntegrityError as exc:
+        session.rollback()
+
+        existing_request = (
+            session.query(OutboxEvent).filter_by(request_id=request_id).first()
+        )
+        if existing_request is not None:
+            if (
+                existing_request.action != ChangeAction.DELETE
+                or existing_request.payload["request_fingerprint"] != fingerprint
+            ):
+                raise RequestConflictError(
+                    "Request ID reused with different operation"
+                ) from exc
+
+            return
+
+        raise
 
     except Exception:
         session.rollback()
@@ -309,6 +354,20 @@ def rename_file(
 
         if constraint_name == "uq_files_active_key":
             raise FileAlreadyExistsError("Destination path already exists") from exc
+
+        existing_request = (
+            session.query(OutboxEvent).filter_by(request_id=request_id).first()
+        )
+        if existing_request is not None:
+            if (
+                existing_request.action != ChangeAction.RENAME
+                or existing_request.payload["request_fingerprint"] != fingerprint
+            ):
+                raise RequestConflictError(
+                    "Request ID reused with different operation"
+                ) from exc
+
+            return existing_request.payload["path"]
 
         raise
 

@@ -27,4 +27,4 @@ class FileAlreadyExistsError(AppError):
 
 
 class InvalidFileVersionError(AppError):
-    pass
+    """The supplied file version is invalid."""

@@ -22,14 +22,14 @@ from backend.db.database import Base
 
 
 class File(Base):
+    __tablename__ = "files"
+
     event_sequence: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0,
         server_default="0",
     )
-
-    __tablename__ = "files"
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True,
@@ -119,18 +119,28 @@ class ChangeAction(str, enum.Enum):
     RENAME = "RENAME"
 
 
-
 class OutboxStatus(str, enum.Enum):
     PENDING = "PENDING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
 
-class OutboxEvent(Base):
-    event_sequence: Mapped[int] = mapped_column(
-        Integer, nullable=False,
+class PartitionState(Base):
+    __tablename__ = "partition_state"
+
+    partition_id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
     )
 
+    last_position: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default="0",
+    )
+
+
+class OutboxEvent(Base):
     __tablename__ = "outbox_events"
 
     __table_args__ = (
@@ -139,6 +149,11 @@ class OutboxEvent(Base):
             "event_sequence",
             name="uq_outbox_file_event_sequence",
         ),
+    )
+
+    event_sequence: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -194,9 +209,22 @@ class OutboxEvent(Base):
         nullable=True,
     )
 
+    partition_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
 
 class ChangeJournal(Base):
     __tablename__ = "change_journal"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "partition_id",
+            "partition_position",
+            name="uq_journal_partition_position",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger,
@@ -243,4 +271,14 @@ class ChangeJournal(Base):
         ForeignKey("outbox_events.id"),
         unique=True,
         nullable=True,
+    )
+
+    partition_id: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    partition_position: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
     )

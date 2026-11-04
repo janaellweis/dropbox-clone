@@ -20,7 +20,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         InvalidFilePathError: 400,
         FileContentMissingError: 500,
         FileAlreadyExistsError: 409,
-        InvalidFileVersionError: 409,
+        InvalidFileVersionError: 400,
     }
 
     for exception_class, status_code in error_statuses.items():
