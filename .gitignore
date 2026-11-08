@@ -1,0 +1,50 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Local blob storage
+data/
+
+# Local test files
+test-upload.txt
+downloaded.txt
+client-downloaded.txt
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+#backup
+*.bak
+
+sync_demo_*/
+sync_test_*/
+
+# demo folders
+/demo_client_a/
+/demo_client_b/
+
+# Celery runtime files
+celerybeat-schedule*
+beat.log
+worker*.log
+
+
+/source/
+/tests_backup/
+/pr_review_comments.txt
+
+# Temporary Celery test files
+/celery-test.txt
+/celery_test.txt
