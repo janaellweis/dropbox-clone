@@ -3,6 +3,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import Path as PathParam
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -115,7 +116,7 @@ def list_file_versions_endpoint(
 @router.get("/{file_id}/versions/{version_number}")
 def download_file_version_endpoint(
     file_id: uuid.UUID,
-    version_number: int,
+    version_number: int = PathParam(ge=1),
     session: Session = Depends(get_db),
     storage: LocalBlobStorage = Depends(get_storage),
 ):

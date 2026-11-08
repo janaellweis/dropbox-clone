@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from backend.core.exceptions import (
     FileAlreadyExistsError,
     FileRecordNotFoundError,
+    FileVersionConflictError,
     InvalidFilePathError,
     InvalidFileVersionError,
     RequestConflictError,
@@ -20,7 +21,6 @@ from backend.db.models import (
     OutboxEvent,
 )
 from backend.services.file_rules import (
-    FileVersionConflictError,
     is_valid_file_key,
     require_latest_version,
 )

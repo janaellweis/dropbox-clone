@@ -125,20 +125,6 @@ class OutboxStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class PartitionState(Base):
-    __tablename__ = "partition_state"
-
-    partition_id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-    )
-
-    last_position: Mapped[int] = mapped_column(
-        BigInteger,
-        nullable=False,
-        server_default="0",
-    )
-
 
 class OutboxEvent(Base):
     __tablename__ = "outbox_events"
@@ -204,27 +190,23 @@ class OutboxEvent(Base):
         nullable=False,
     )
 
+    claimed_by: Mapped[uuid.UUID | None] = mapped_column(
+        nullable=True,
+    )
+
+    claimed_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
 
-    partition_id: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-    )
-
 
 class ChangeJournal(Base):
     __tablename__ = "change_journal"
-
-    __table_args__ = (
-        UniqueConstraint(
-            "partition_id",
-            "partition_position",
-            name="uq_journal_partition_position",
-        ),
-    )
 
     id: Mapped[int] = mapped_column(
         BigInteger,
@@ -271,14 +253,4 @@ class ChangeJournal(Base):
         ForeignKey("outbox_events.id"),
         unique=True,
         nullable=True,
-    )
-
-    partition_id: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-    )
-
-    partition_position: Mapped[int] = mapped_column(
-        BigInteger,
-        nullable=False,
     )

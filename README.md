@@ -6,34 +6,72 @@ The main goal of this project is to change how I approach software engineering. 
 
 I'm trying to move from a tactical, code-first approach to a more design first approach, where I focus on why I'm building something a certain way, not just how to make it work.
 -----------
-## Current Progress (PR 4)
+## Current Progress BAckend MVP
 It currently supports:
 
-- Uploading and downloading files
-- Updating, deleting, and renaming files
-- File versioning
-- Optimistic concurrency control
-- Idempotent requests
-- Transactional outbox and change journal
-- Background event publishing with Redis and Celery
-- Partitioned journal checkpoints
+-File upload and download
+-File updates, deletion, and renaming
+-File versioning and version history
+-SHA-256 content-addressed blob storage
+-Content deduplication
+-Soft deletion
+-Optimistic concurrency control
+-Idempotent requests using UUIDv7 request IDs
+-Transactional outbox
+-Asynchronous event publishing with Celery
+-Ordered change journal with checkpoint-based pagination
+-Recovery of expired worker claims
  
-### New way of publishing
+## Architecture
 
-used a transactional outbox to make sure file changes are reliably recorded and published to the change journal
+The backend is organized into separate layers:
 
-so when a file changes, its metadata and corresponding outbox event are saved in the same database transaction
+- API Layer — FastAPI
 
-background workers then publish pending events into the change journal
+Handles HTTP requests, input validation, responses, and error handling.
 
-the journal is divided into four logical partitions each with its own sequence of positions
+- Service Layer
 
-PostgreSQL row locking coordinates concurrent workers and prevents them from assigning duplicate positions.
+Contains business logic for file operations, version management, concurrency checks, and idempotency.
 
-redis acts as the message broker for celery, while celery beat schedules publishing tasks every five seconds
+- Database — PostgreSQL
 
-two celery workers process pending events with each task handling up to 100 events
+Stores file metadata, versions, outbox events, and published journal entries.
 
+- Blob Storage
+
+Stores file content separately from metadata using SHA-256 hashes. File updates create new versions without overwriting previous blobs.
+
+- Background Workers — Celery
+
+Processes pending outbox events and publishes them to the change journal.
+
+## Transactional Outbox and Change Journal
+
+The transactional outbox ensures that file changes are reliably recorded for asynchronous publication.
+
+When a file is created, updated, deleted, or renamed, the corresponding metadata changes and outbox event are committed within the same PostgreSQL transaction.
+
+Celery workers periodically claim pending events and publish them to the change journal.
+
+The implementation uses:
+
+-PostgreSQL SELECT FOR UPDATE SKIP LOCKED for concurrent event claiming
+-Leases to recover abandoned claims
+-Per-file event sequences to preserve operation ordering
+-PostgreSQL transaction-level advisory locking to serialize journal publication
+-A single numeric journal checkpoint for client synchronization
+-Clients retrieve changes through GET /updates, using their last processed checkpoint.
+-Technology Stack
+-Python 3.13
+-FastAPI
+-PostgreSQL
+-SQLAlchemy
+-Alembic
+-Celery
+-Kombu SQLAlchemy transport
+-Pytest
+-SHA-256
 
 ## Setup and Running
 
@@ -59,55 +97,35 @@ docker compose up -d
 alembic upgrade head
 ```
 
-### 4. Start Redis
-
-For the first time:
-
-```bash
-docker run -d --name dropbox-redis -p 127.0.0.1:6379:6379 redis:7-alpine
-```
-
-If the container already exists:
-
-```bash
-docker start dropbox-redis
-```
-
-Verify the connection:
-
-```bash
-docker exec dropbox-redis redis-cli ping
-```
-
-Expected response: `PONG`.
-
-### 5. Start FastAPI
+### 4. Start FastAPI
 
 ```bash
 python -m uvicorn backend.main:app --reload
 ```
-
 API documentation: http://127.0.0.1:8000/docs
-### 6. Start two Celery workers
 
-The workers run in the background using `nohup`, so they can continue running after the terminal is closed.
+## 5. Start Celery Worker
+
+The workers run in the background using nohup, so they can continue running after the terminal is closed.
 
 Worker 1:
 
-```bash
 nohup python -m celery -A backend.workers.celery_app:celery_app worker --loglevel=info --queues=journal --hostname=worker1@%h --pool=solo > worker1.log 2>&1 &
-```
 
 Worker 2:
 
-```bash
 nohup python -m celery -A backend.workers.celery_app:celery_app worker --loglevel=info --queues=journal --hostname=worker2@%h --pool=solo > worker2.log 2>&1 &
-```
-### 7. Start Celery Beat
 
-```bash
+The backend supports multiple Celery workers processing outbox events concurrently.
+
+Workers use PostgreSQL `SELECT FOR UPDATE SKIP LOCKED` to claim different events without processing the same event simultaneously.
+
+A PostgreSQL advisory transaction lock ensures that only one worker publishes events to the change journal at a time, preserving checkpoint ordering.
+Additional workers can be started with unique hostnames. Journal publication remains serialized to maintain consistency.
+
+## 6. Start Celery Beat
+
 nohup python -m celery -A backend.workers.celery_app:celery_app beat --loglevel=info > beat.log 2>&1 &
-```
 
 Celery Beat schedules the publishing task every five seconds.
 
@@ -115,17 +133,20 @@ The workers and Beat run as background processes and do not require open termina
 
 To check whether they are running:
 
-```bash
 pgrep -fl celery
-```
 
 These processes do not automatically restart after a reboot or crash.
+
 ## Next Steps
 
-The next major step is completing the smart synchronization client.
+The next phase focuses on building the synchronization client.
 
-The client will detect local file changes, retrieve remote updates using partitioned journal checkpoints, and decide which operations to perform.
-
-It will also handle conflicting changes, preserve synchronization state across restarts, and safely recover from interrupted operations.
-
-The existing client needs to be updated to work with the new partitioned checkpoint interface.
+The client should:
+-Detect local file changes using hashes
+-Retrieve remote changes using journal checkpoints
+-Determine the necessary synchronization operations
+-Upload and download files
+-Handle conflicts without losing local changes
+-Preserve synchronization state across restarts
+-Recover safely from interrupted operations
+-The client will be designed around separate change detection, planning, execution, and coordination responsibilities.

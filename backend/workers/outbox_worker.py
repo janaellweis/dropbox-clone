@@ -1,109 +1,162 @@
-from datetime import datetime, timezone
 
-from sqlalchemy import select
+from dataclasses import dataclass
+from datetime import timedelta
+from uuid import UUID
+
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, aliased
+from uuid6 import uuid7
 
-from backend.db.models import (
-    ChangeJournal,
-    OutboxEvent,
-    OutboxStatus,
-    PartitionState,
-)
+from backend.db.models import ChangeJournal, OutboxEvent, OutboxStatus
 
 
-def process_pending_events(session: Session) -> int:
-    """Publish one pending outbox event."""
-    earlier_event = aliased(OutboxEvent)
-    candidate_event = aliased(OutboxEvent)
+@dataclass(frozen=True)
+class ClaimedBatch:
+    claim_id: UUID
+    event_ids: tuple[UUID, ...]
+
+
+def claim_batch(
+    session: Session,
+    batch_size: int = 100,
+    lease_seconds: int = 60,
+) -> ClaimedBatch | None:
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if lease_seconds < 1:
+        raise ValueError("lease_seconds must be positive")
+
+    claim_id = uuid7()
+    now = session.scalar(select(func.clock_timestamp()))
+    earlier = aliased(OutboxEvent)
 
     try:
-        partition = session.scalar(
-            select(PartitionState)
-            .where(
-                select(candidate_event.id)
-                .where(candidate_event.partition_id == PartitionState.partition_id)
-                .where(candidate_event.status == OutboxStatus.PENDING)
-                .where(
-                    ~select(earlier_event.id)
-                    .where(earlier_event.file_id == candidate_event.file_id)
-                    .where(
-                        earlier_event.event_sequence < candidate_event.event_sequence
-                    )
-                    .where(earlier_event.status != OutboxStatus.COMPLETED)
-                    .exists()
-                )
-                .exists()
-            )
-            .order_by(PartitionState.partition_id)
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-
-        if partition is None:
-            session.rollback()
-            return 0
-
-        # Select the next eligible event in the claimed partition.
-        event = session.scalar(
+        events = session.scalars(
             select(OutboxEvent)
-            .where(OutboxEvent.partition_id == partition.partition_id)
             .where(OutboxEvent.status == OutboxStatus.PENDING)
             .where(
-                ~select(earlier_event.id)
-                .where(earlier_event.file_id == OutboxEvent.file_id)
-                .where(earlier_event.event_sequence < OutboxEvent.event_sequence)
-                .where(earlier_event.status != OutboxStatus.COMPLETED)
+                or_(
+                    OutboxEvent.claimed_until.is_(None),
+                    OutboxEvent.claimed_until <= now,
+                )
+            )
+            .where(
+                ~select(earlier.id)
+                .where(earlier.file_id == OutboxEvent.file_id)
+                .where(
+                    earlier.event_sequence < OutboxEvent.event_sequence
+                )
+                .where(earlier.status != OutboxStatus.COMPLETED)
                 .exists()
             )
             .order_by(OutboxEvent.created_at, OutboxEvent.id)
-            .limit(1)
-            .with_for_update()
-        )
+            .limit(batch_size)
+            .with_for_update(skip_locked=True, of=OutboxEvent)
+        ).all()
 
-        if event is None:
+        if not events:
             session.rollback()
-            return 0
+            return None
 
-        next_position = partition.last_position + 1
+        for event in events:
+            event.claimed_by = claim_id
+            event.claimed_until = now + timedelta(seconds=lease_seconds)
 
-        journal_entry = ChangeJournal(
-            file_id=event.file_id,
-            partition_id=partition.partition_id,
-            partition_position=next_position,
-            action=event.action,
-            path=event.payload["path"],
-            old_path=event.payload["old_path"],
-            version_number=event.payload["version_number"],
-            request_id=event.request_id,
-            request_fingerprint=event.payload["request_fingerprint"],
-            outbox_event_id=event.id,
-        )
-
-        session.add(journal_entry)
-
-        partition.last_position = next_position
-        event.status = OutboxStatus.COMPLETED
-        event.processed_at = datetime.now(timezone.utc)
-
+        event_ids = tuple(event.id for event in events)
         session.commit()
-        return 1
+
+        return ClaimedBatch(
+            claim_id=claim_id,
+            event_ids=event_ids,
+        )
 
     except Exception:
         session.rollback()
         raise
 
+PUBLICATION_LOCK_ID = 742002
+
+
+def try_acquire_publication_lock(session: Session) -> bool:
+    return bool(
+        session.scalar(
+            select(func.pg_try_advisory_xact_lock(PUBLICATION_LOCK_ID))
+        )
+    )
+
+
+
+def publish_batch(session: Session, batch: ClaimedBatch) -> int:
+    try:
+        if not try_acquire_publication_lock(session):
+            session.rollback()
+            return 0
+
+        events = session.scalars(
+            select(OutboxEvent)
+            .where(OutboxEvent.id.in_(batch.event_ids))
+            .order_by(OutboxEvent.id)
+            .with_for_update(nowait=True)
+        ).all()
+
+        now = session.scalar(select(func.clock_timestamp()))
+
+        if len(events) != len(batch.event_ids):
+            session.rollback()
+            return 0
+
+        for event in events:
+            if (
+                event.status != OutboxStatus.PENDING
+                or event.claimed_by != batch.claim_id
+                or event.claimed_until is None
+                or event.claimed_until <= now
+            ):
+                session.rollback()
+                return 0
+
+        for event in events:
+            session.add(
+                ChangeJournal(
+                    file_id=event.file_id,
+                    action=event.action,
+                    path=event.payload["path"],
+                    old_path=event.payload.get("old_path"),
+                    version_number=event.payload.get("version_number"),
+                    request_id=event.request_id,
+                    request_fingerprint=event.payload["request_fingerprint"],
+                    outbox_event_id=event.id,
+                )
+            )
+
+            event.status = OutboxStatus.COMPLETED
+            event.processed_at = now
+            event.claimed_by = None
+            event.claimed_until = None
+
+        session.commit()
+        return len(events)
+
+    except OperationalError as exc:
+        session.rollback()
+
+        # PostgreSQL: lock_not_available
+        if getattr(exc.orig, "pgcode", None) == "55P03" or getattr(
+            exc.orig, "sqlstate", None
+        ) == "55P03":
+            return 0
+
+        raise
+
+    except Exception:
+        session.rollback()
+        raise
 
 def process_event_batch(session: Session, batch_size: int = 100) -> int:
-    """Publish up to batch_size pending events."""
-    if batch_size < 1:
-        raise ValueError("batch_size must be positive")
+    batch = claim_batch(session, batch_size=batch_size)
 
-    processed = 0
+    if batch is None:
+        return 0
 
-    for _ in range(batch_size):
-        if process_pending_events(session) == 0:
-            break
-
-        processed += 1
-
-    return processed
+    return publish_batch(session, batch)

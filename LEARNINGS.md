@@ -131,19 +131,11 @@ the order of journal entries matters so clients should not receive changes in th
 
 ## 9. Database Transactions
 
-database operations need to happen together, updating a file can involve creating a new version, updating its metadata, and recording an event in the journal.
+database operations need to happen together, updating a file can involve creating a new version, updating its metadata, and recording an event in the outbox.
 
 if one database operation fails, we don't want the others to remain partially committed.
 
 Transactions allow the database changes to succeed or fail together.
-
-## Struggles / Things I Need to Work On
-
-- **System design:** I sometimes understand the coding part but struggle with deciding how the system should be structured.
-- **Design principles:** Still learning how to separate responsibilities and avoid unnecessary complexity.
-- **Git:** Need to get used to committing, pushing, pulling, and creating PRs regularly instead of waiting until the end.
-- **Thinking before coding:** I still tend to jump into implementation instead of fully thinking through the design first, so I need to get better at making design decisions on my own, explaining why I chose a certain approach, and thinking about the system as a whole instead of just individual functions.
-
 
 ### PR4
 ## 10. Transactional Outbox Pattern
@@ -173,11 +165,21 @@ the partitioned journal uses row locking and committed positions to avoid this p
 
 so clients will track a checkpoint for each partition instead of relying on one global checkpoint
 
+**method was changed but it was a great idea to apply and test.
+
 ## 12. PostgreSQL Row Locking
 
-to coordinate multiple background workers, we used `SELECT FOR UPDATE SKIP LOCKED`  so  when one worker locks a partition then another worker skips it and looks for an available partition
+multiple workers can attempt to process pending events simultaneously,  but we use SELECT FOR UPDATE SKIP LOCKED so workers can claim different available events without waiting on the same locked rows
 
-This prevents workers from updating the same partition position simultaneously
+Each claim has an expiration time so if a worker fails before publishing, another worker can reclaim the event after its lease expires.
+
+also used per-file event sequence numbers to prevent later operations on the same file from being published before earlier ones.
+
+one main issue was the sequence allocation order and transaction commit order like transaction A might receive journal ID 5 but commit after transaction B publishes ID 6.
+
+and if advances its checkpoint to 6 before ID 5 becomes visible, it could permanently miss event 5, so we explored a partitioned journal to address this
+
+Then moved to the  current implementation whcih uses a single numeric journal and a PostgreSQL transaction-level advisory lock to serialize publication, this makes the publication order compatible with the client's checkpoint model
 
 ## 13. Redis and Celery
 
@@ -193,18 +195,37 @@ workers then read pending outbox events from PostgreSQL and publish them into th
 
 Redis doesn't store the actual file changes or determine which events have been published its just responsible for delivering the tasks that tell workers to check for pending events.
 
+but redis is excluded now from the project, will be using kombu's sqlAlchmy transport, and stick to postgresql insead as the message broker
+
+kombu is a messaging library that comes with with and allows it to communicate with different brokers
+
+redis is still useful to learn because it's commonly used for caching, message queues, and fast in-memory data storage.
+
 ## 14. Batching
 
-the publishing function handled one event at a time but then added batch processing so Celery can handle up to 100 events per task instead of just one
+Publishing events individually creates unnecessary overhead, so the worker can claim and publish batches of events.
 
-Each event is saved separately, so if something fails then the previously completed events wont be lost
+The Celery task can process multiple batches in one execution, while keeping the amount of work bounded.
 
+returning zero published events does not always mean the outbox is empty, it can mean another worker holds the publication lock or events are temporarily claimed.
+
+periodic scheduler allows later attempts, and expired leases make abandoned claims recoverable
+
+
+## Struggles / Things I Need to Work On
+
+- **System design:** I sometimes understand the coding part but struggle with deciding how the system should be structured.
+- **Design principles:** Still learning how to separate responsibilities and avoid unnecessary complexity.
+- **Git:** Need to get used to committing, pushing, pulling, and creating PRs regularly instead of waiting until the end.
+- **Thinking before coding:** I still tend to jump into implementation instead of fully thinking through the design first, so I need to get better at making design decisions on my own, explaining why I chose a certain approach, and thinking about the system as a whole instead of just individual functions.
+
+## trial and Error questions and details ive learned from
 ## Task RUnners, Task Managers, Daemon Processes
 different ways to run background tasks.
 
 - Task Runners: Execute tasks, such as processing pending events. (Workers)
 - Task Managers: Schedule and coordinate tasks, deciding when they should run. (Coordinator)
-- Daemon processes: Long-running background programs. 
+- Daemon processes: Long-running background programs.
 
 the celery workers and beat can run this way using nohup. we can also run the client synchronization engine as a background process.
 
@@ -222,3 +243,12 @@ We learned about this as another approach to tracking changes, but our Dropbox c
 ## Pydantic
 
 it helps make sure incoming data follows the expected format before the application processes it
+
+## statelessness
+statelessness does not mean the entire system has no state.
+
+FastAPI is designed to handle requests without relying on process memory from previous requests and persistent information belongs in PostgreSQL and blob storage
+
+The outbox worker also stores its claims and progress in PostgreSQL rather than depending on local process memory
+
+The synchronization client will intentionally be stateful because it needs to remember file versions, hashes, and journal checkpoints.

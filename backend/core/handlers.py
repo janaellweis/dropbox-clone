@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -12,6 +14,16 @@ from backend.core.exceptions import (
 )
 
 
+def make_handler(status_code: int) -> Callable:
+    def handler(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=status_code,
+            content={"detail": str(exc)},
+        )
+
+    return handler
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     error_statuses = {
         FileRecordNotFoundError: 404,
@@ -24,15 +36,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     }
 
     for exception_class, status_code in error_statuses.items():
-
-        def handler(
-            request: Request,
-            exc: Exception,
-            status_code: int = status_code,
-        ) -> JSONResponse:
-            return JSONResponse(
-                status_code=status_code,
-                content={"detail": str(exc)},
-            )
-
-        app.add_exception_handler(exception_class, handler)
+        app.add_exception_handler(
+            exception_class,
+            make_handler(status_code),
+        )

@@ -9,11 +9,12 @@ from backend.core.exceptions import (
     FileContentMissingError,
     FileRecordNotFoundError,
     RequestConflictError,
+    InvalidFilePathError,
 )
 from backend.db.models import ChangeAction, File, FileVersion, OutboxEvent
 from backend.services.outbox import enqueue_event
 from backend.storage.local import LocalBlobStorage
-
+from backend.services.file_rules import is_valid_file_key
 
 def find_existing_create(
     session: Session,
@@ -48,6 +49,9 @@ def create_file(
     content: BinaryIO,
     request_id: uuid.UUID,
 ) -> File:
+    if not is_valid_file_key(key):
+        raise InvalidFilePathError("Invalid file path")
+
     fingerprint_prefix = b"CREATE\0" + key.encode("utf-8") + b"\0"
 
     content_hash, size, fingerprint = storage.save(

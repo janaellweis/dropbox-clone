@@ -9,4 +9,4 @@ pytest==9.1.1
 ruff==0.17.2
 uuid6==2025.0.1
 watchdog==7.0.0
-celery[redis]
+celery

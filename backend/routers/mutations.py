@@ -1,7 +1,7 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.dependencies import get_db, get_storage
@@ -14,14 +14,14 @@ router = APIRouter(prefix="/files", tags=["files"])
 class RenameFileRequest(BaseModel):
     expected_key: str
     new_key: str
-    expected_version: int
+    expected_version: int = Field(ge=1)
     request_id: uuid.UUID
 
 
 @router.put("/{file_id}")
 def update_file_endpoint(
     file_id: uuid.UUID,
-    expected_version: int = Form(...),
+    expected_version: int = Form(..., ge=1),
     request_id: uuid.UUID = Form(...),
     file: UploadFile = File(...),
     session: Session = Depends(get_db),
@@ -47,8 +47,8 @@ def update_file_endpoint(
 @router.delete("/{file_id}")
 def delete_file_endpoint(
     file_id: uuid.UUID,
-    expected_version: int,
     request_id: uuid.UUID,
+    expected_version: int = Query(ge=1),
     session: Session = Depends(get_db),
 ):
     delete_file(

@@ -1,8 +1,10 @@
 from celery import Celery
 
+from backend.db.database import engine
+
 celery_app = Celery(
     "dropbox_sync",
-    broker="redis://localhost:6379/0",
+    broker=f"sqla+{engine.url.render_as_string(hide_password=False)}",
     include=["backend.workers.tasks"],
 )
 
