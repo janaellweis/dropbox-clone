@@ -1,21 +1,18 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from backend.core.exceptions import FileContentMissingError
 from backend.dependencies import get_db, get_storage
+from backend.schemas.mutations import (
+    RenameFileRequest,
+    UpdateFromChunksRequest,
+)
 from backend.services.mutations import delete_file, rename_file, update_file
 from backend.storage.local import LocalBlobStorage
 
 router = APIRouter(prefix="/files", tags=["files"])
-
-
-class RenameFileRequest(BaseModel):
-    expected_key: str
-    new_key: str
-    expected_version: int = Field(ge=1)
-    request_id: uuid.UUID
 
 
 @router.put("/{file_id}")
@@ -36,6 +33,36 @@ def update_file_endpoint(
         expected_version=expected_version,
         request_id=request_id,
     )
+    return {
+        "file_id": file_id,
+        "version": version.version_number,
+        "content_hash": version.content_hash,
+        "size": version.size,
+    }
+
+
+@router.put("/{file_id}/from-chunks")
+def update_file_from_chunks(
+    file_id: uuid.UUID,
+    request: UpdateFromChunksRequest,
+    session: Session = Depends(get_db),
+    storage: LocalBlobStorage = Depends(get_storage),
+):
+    try:
+        version = update_file(
+            session=session,
+            storage=storage,
+            file_id=file_id,
+            content=None,
+            expected_version=request.expected_version,
+            request_id=request.request_id,
+            chunk_hashes=request.chunk_hashes,
+            expected_hash=request.content_hash,
+            expected_size=request.size,
+        )
+    except (FileContentMissingError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     return {
         "file_id": file_id,
         "version": version.version_number,
