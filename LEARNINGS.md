@@ -22,15 +22,11 @@ so I am trying to understand why we make certain decisions, how to structure a s
 ### Client and Sync
 
 - [x] Build a basic Python client that can push and pull files
-- [ ] Detect local file changes
-- [ ] Automatically sync between two clients
-- [ ] Handle offline changes
-- [ ] Handle conflicts
-- [ ] Add file updates, deletion, and renaming
-
-### Other Things To Do
-
-- [ ] Add folder handling
+- [x] Detect local file changes
+- [x] Automatically sync between two clients
+- [x] Handle offline changes
+- [x] Handle conflicts
+- [x] Add file updates, deletion, and renaming
 
 ## Learning to Think About Design First
 
@@ -240,15 +236,42 @@ Some CDC systems read the WAL to detect changes and send them to other systems.
 
 We learned about this as another approach to tracking changes, but our Dropbox clone uses a transactional outbox instead.
 
+## Database connection pooling
+Opening a new database connection for every request is expensive, so pooling keeps connections available and reuses them, reducing overhead. Our backend already uses SQLAlchemy QueuePool and pool_pre_ping=True.
+
 ## Pydantic
 
 it helps make sure incoming data follows the expected format before the application processes it
 
-## statelessness
-statelessness does not mean the entire system has no state.
+## Chunking
+split large files into smaller pieces instead of storing and transferring one large file.
 
-FastAPI is designed to handle requests without relying on process memory from previous requests and persistent information belongs in PostgreSQL and blob storage
+## Types of Chunking
+    -Fixed-size chunking (FSC)
+    simple and fast, but inserting or deleting bytes can shift chunk boundaries and reduce deduplication.
 
-The outbox worker also stores its claims and progress in PostgreSQL rather than depending on local process memory
+    -Content-defined chunking (CDC)
+    finds boundaries based on file content, so unchanged chunks can still be reused so smaller chunks improve deduplication but increase metadata and processing overhead. On the other hand, larger chunks reduce overhead but can increase retransmission.
 
-The synchronization client will intentionally be stateful because it needs to remember file versions, hashes, and journal checkpoints.
+## Delta transfers
+transfer only missing or modified chunks rather than the entire file, and this saves bandwidth and storage.
+## chunk manifest
+an ordered list of chunk references used to reconstruct a file.
+
+## Hashing and chunking algorithms
+    - Rolling hash: efficiently updates a window hash as bytes enter and leave.
+    - Rabin fingerprinting: a rolling fingerprint used to find content-dependent boundaries; more computationally expensive.
+    - Gear hashing: a faster, simpler method using bit shifts, additions, and lookup tables, but it can produce uneven chunk sizes.
+    * Boundary fingerprint determines where a chunk ends.
+    * Chunk content hash identifies and verifies the completed chunk.
+    - FastCDC: optimized content-defined chunking using cut-point skipping, optimized hash judgment, and normalized chunking. (implemented in system)
+    - RapidCDC: uses information from previously seen chunks to speed up chunking.
+    - QuickCDC: uses more aggressive boundary prediction to skip some work.
+
+## Incremental scanning
+instead of scanning everything every time, scan only new or modified files detected since the last scan.
+periodic full scans are still needed to detect missed changes and correct inconsistencies.
+
+
+*Different applications need different chunking strategies.
+*CDC is particularly useful for file synchronization.

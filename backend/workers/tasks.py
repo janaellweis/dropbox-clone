@@ -17,3 +17,11 @@ def publish_outbox() -> int:
             published += count
 
     return published
+
+
+@celery_app.task(name="backend.workers.tasks.collect_garbage")
+def collect_garbage() -> dict:
+    from backend.dependencies import get_storage
+    from backend.services.gc import collect_garbage as collect
+
+    return collect(SessionLocal, get_storage())

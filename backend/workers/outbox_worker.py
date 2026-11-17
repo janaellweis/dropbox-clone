@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
@@ -44,9 +43,7 @@ def claim_batch(
             .where(
                 ~select(earlier.id)
                 .where(earlier.file_id == OutboxEvent.file_id)
-                .where(
-                    earlier.event_sequence < OutboxEvent.event_sequence
-                )
+                .where(earlier.event_sequence < OutboxEvent.event_sequence)
                 .where(earlier.status != OutboxStatus.COMPLETED)
                 .exists()
             )
@@ -75,16 +72,14 @@ def claim_batch(
         session.rollback()
         raise
 
+
 PUBLICATION_LOCK_ID = 742002
 
 
 def try_acquire_publication_lock(session: Session) -> bool:
     return bool(
-        session.scalar(
-            select(func.pg_try_advisory_xact_lock(PUBLICATION_LOCK_ID))
-        )
+        session.scalar(select(func.pg_try_advisory_xact_lock(PUBLICATION_LOCK_ID)))
     )
-
 
 
 def publish_batch(session: Session, batch: ClaimedBatch) -> int:
@@ -142,9 +137,10 @@ def publish_batch(session: Session, batch: ClaimedBatch) -> int:
         session.rollback()
 
         # PostgreSQL: lock_not_available
-        if getattr(exc.orig, "pgcode", None) == "55P03" or getattr(
-            exc.orig, "sqlstate", None
-        ) == "55P03":
+        if (
+            getattr(exc.orig, "pgcode", None) == "55P03"
+            or getattr(exc.orig, "sqlstate", None) == "55P03"
+        ):
             return 0
 
         raise
@@ -152,6 +148,7 @@ def publish_batch(session: Session, batch: ClaimedBatch) -> int:
     except Exception:
         session.rollback()
         raise
+
 
 def process_event_batch(session: Session, batch_size: int = 100) -> int:
     batch = claim_batch(session, batch_size=batch_size)

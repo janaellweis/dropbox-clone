@@ -31,7 +31,7 @@ def require_latest_version(
 
 def is_valid_file_key(key: str) -> bool:
     """Validate a relative, slash-separated file key."""
-    if not key or len(key) > 1024:
+    if not key or key == "." or len(key) > 1024:
         return False
 
     if "\\" in key:
