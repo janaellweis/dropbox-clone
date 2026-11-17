@@ -130,11 +130,7 @@ def _assemble_download(
     temporary: Path,
     chunks: list[tuple[str, int]],
 ) -> None:
-    """Assemble verified chunks in manifest order using bounded content buffers.
-
-    The manifest and hash-to-range indexes grow with the number of chunks.
-    Previously assembled ranges also supply repeated manifest entries.
-    """
+    """Content buffers are bounded; manifests and range indexes grow with chunks."""
     local_ranges: dict[str, tuple[int, int]] = {}
     if chunks and destination.is_file():
         offset = 0

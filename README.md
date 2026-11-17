@@ -57,7 +57,7 @@ A lot of the design came from asking what happens when an operation doesn't go a
 
 The backend uses SQLAlchemy connection pooling, with `pool_pre_ping=True` to check connections before reusing them. Celery Beat schedules outbox publication every five seconds, and the Celery broker uses PostgreSQL through Kombu's SQLAlchemy transport, so Redis isn't required.
 
-Not every failure can be resolved automatically. Some ambiguous conflicts or invalidated operations still need intervention. Also, chunk files aren't part of PostgreSQL transactions, so failed operations can leave unreferenced chunks until garbage collection is added.
+Not every failure can be resolved automatically. Some ambiguous conflicts or invalidated operations still need intervention. Also, chunk files aren't part of PostgreSQL transactions, so failed operations can leave unreferenced chunks. Garbage collection periodically removes chunks that are no longer referenced, after a 30-day inactivity period.
 
 
 ## Running the Project
@@ -66,7 +66,7 @@ These commands are for running the project locally. You'll need Python 3.13, Doc
 
 Once the server, workers, and clients are running, file synchronization happens automatically.
 
-### 1. Install dependencies
+## 1. Install dependencies
 
 Run these commands from the project root:
 
@@ -76,7 +76,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-### 2. Start PostgreSQL
+## 2. Start PostgreSQL
 
 Start the database using Docker Compose:
 
@@ -93,7 +93,7 @@ export BLOB_STORAGE_PATH="$PWD/data/blobs"
 
 Make sure these database credentials match the settings in `compose.yaml`.
 
-### 3. Start the backend
+## 3. Start the backend
 
 Apply the database migrations:
 
@@ -109,7 +109,7 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
 
 API documentation: http://127.0.0.1:8001/docs
 
-### 4. Start Celery
+## 4. Start Celery
 
 Celery handles publishing file changes to the change journal, so other clients can detect them.
 
@@ -117,8 +117,11 @@ Start the worker in a separate terminal:
 
 ```bash
 python -m celery -A backend.workers.celery_app:celery_app worker \
-  --loglevel=info --queues=journal --pool=solo
+  --loglevel=info --queues=journal,gc --pool=solo
 ```
+
+GC runs daily at 03:00 UTC. Its default inactivity grace period is 30 days;
+set `GC_GRACE_DAYS` in the worker environment to change it.
 
 Start Celery Beat in another terminal:
 
@@ -130,7 +133,7 @@ Make sure both terminals have the virtual environment activated and the same bac
 
 Beat schedules the publishing task every five seconds, while the worker processes pending events.
 
-### 5. Start two clients
+## 5. Start two clients
 
 Run each client in a separate terminal with a different folder.
 
@@ -150,7 +153,7 @@ python -m client --folder /tmp/dropbox-example-b \
 
 Use fresh folders and activate the virtual environment in both terminals.
 
-### 6. Try syncing files
+## 6. Try syncing files
 
 Once everything is running, create a file in Client A's folder. The client will automatically detect and upload it, and Client B will download it after receiving the update.
 
@@ -159,6 +162,6 @@ You can also try editing, renaming, and deleting files to see how the clients sy
 The clients keep their synchronization state and pending operations on disk, allowing them to recover from supported interruptions after restarting.
 
 
-## limitations
+## Limitations
 - Transfers are sequential, and large manifests can use significant memory.
-- Storage garbage collection, more performance work, and production process management are future improvements.
+- More performance work and production process management are future improvements.

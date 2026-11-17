@@ -1,9 +1,3 @@
-"""Coordinate pure plans, durable intents, execution, and acknowledgement.
-
-The executor applies planned actions. This coordinator records their intents,
-advances acknowledged baselines, and completes pending operations.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -562,7 +556,6 @@ def sync_folder(
             operation = _prepare_local(root, state, action, state["remote_files"], api)
             _recover_local(root, state, executor, operation)
 
-            # Refresh both paths affected by the completed local operation.
             affected = {action.path}
 
             if operation["target_path"]:

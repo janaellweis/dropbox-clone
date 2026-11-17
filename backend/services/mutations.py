@@ -24,13 +24,14 @@ from backend.db.models import (
 from backend.services.chunks import (
     attach_version_chunks,
     register_manifest_chunks,
-    save_version_chunks,
+    stage_upload_chunks,
     validate_chunk_manifest,
 )
 from backend.services.file_rules import (
     is_valid_file_key,
     require_latest_version,
 )
+from backend.services.gc import protect_chunks
 from backend.services.outbox import enqueue_event
 from backend.storage.local import LocalBlobStorage
 from shared.chunking import chunk_file
@@ -79,7 +80,10 @@ def update_file(
         upload = nullcontext((None, expected_hash, expected_size, hasher.hexdigest()))
 
     with upload as (temp_path, content_hash, size, fingerprint):
+        if chunk_hashes is None:
+            chunk_hashes = stage_upload_chunks(session, storage, chunk_file(temp_path))
         try:
+            protect_chunks(session, storage, chunk_hashes)
             existing_request = (
                 session.query(OutboxEvent).filter_by(request_id=request_id).first()
             )
@@ -152,16 +156,8 @@ def update_file(
             session.add(version)
             session.flush()
 
-            if chunk_hashes is None:
-                save_version_chunks(
-                    session=session,
-                    storage=storage,
-                    file_version_id=version.id,
-                    chunks=chunk_file(temp_path),
-                )
-            else:
-                register_manifest_chunks(session, storage, chunk_hashes)
-                attach_version_chunks(session, version.id, chunk_hashes)
+            register_manifest_chunks(session, storage, chunk_hashes)
+            attach_version_chunks(session, version.id, chunk_hashes)
 
             enqueue_event(
                 session=session,

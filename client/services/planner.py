@@ -36,7 +36,6 @@ def plan_sync(
 
     handled_local_paths: set[str] = set()
 
-    # Plan operations for previously synchronized files.
     for path, saved in synced_files.items():
         file_id = saved["file_id"]
         remote = remote_files.get(file_id)
@@ -139,7 +138,6 @@ def plan_sync(
         elif remote_changed:
             actions.append(PlannedAction(SyncAction.DOWNLOAD, path, file_id))
 
-    # Plan operations for new local files.
     for path in local_files:
         if path in synced_files or path in handled_local_paths:
             continue
@@ -149,7 +147,6 @@ def plan_sync(
         else:
             actions.append(PlannedAction(SyncAction.CREATE_REMOTE, path))
 
-    # Plan downloads for previously unknown remote files.
     for file_id, remote in remote_files.items():
         if file_id in synced_file_ids:
             continue

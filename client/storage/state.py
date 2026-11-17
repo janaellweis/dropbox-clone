@@ -1,9 +1,3 @@
-"""Durable acknowledgement baselines, remote observations, and recovery intents.
-
-Loading validates recovery preconditions without normalizing or discarding legacy
-fields. Saving replaces the state atomically after flushing its contents.
-"""
-
 import json
 import os
 import tempfile
@@ -31,8 +25,6 @@ class RemoteFile(TypedDict):
 
 
 class SyncState(TypedDict):
-    """JSON records retain their existing field names and insertion order."""
-
     schema_version: int
     checkpoint: int
     files: dict[str, SyncedFile]  # Relative path -> acknowledged local baseline.

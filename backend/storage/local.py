@@ -1,5 +1,6 @@
 import hashlib
 import os
+import stat
 import tempfile
 from collections.abc import Generator, Iterable, Iterator
 from contextlib import contextmanager
@@ -32,11 +33,70 @@ class LocalBlobStorage:
         blob_path = self.root / content_hash
         return blob_path.is_file()
 
+    def iter_files(self) -> Iterator[tuple[str, int, int]]:
+        """List regular file names, sizes, and mtimes without opening or following links."""
+        with os.scandir(self.root) as entries:
+            for entry in entries:
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISREG(metadata.st_mode):
+                    yield entry.name, metadata.st_size, metadata.st_mtime_ns
+
+    def file_metadata(self, content_hash: str) -> os.stat_result | None:
+        try:
+            metadata = (self.root / content_hash).lstat()
+        except FileNotFoundError:
+            return None
+        return metadata if stat.S_ISREG(metadata.st_mode) else None
+
+    def renew_chunk(self, content_hash: str) -> bool:
+        try:
+            fd = os.open(
+                self.root / content_hash, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            )
+        except FileNotFoundError:
+            return False
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("Chunk is not a regular file")
+            os.utime(fd, None)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+
+    def unlink_chunk(
+        self, content_hash: str, expected: os.stat_result, cutoff_ns: int
+    ) -> bool:
+        current = self.file_metadata(content_hash)
+        if current is None or current.st_mtime_ns > cutoff_ns:
+            return False
+        if any(
+            getattr(current, field) != getattr(expected, field)
+            for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        ):
+            return False
+        try:
+            (self.root / content_hash).unlink()
+        except FileNotFoundError:
+            return False
+        self._sync_directory()
+        return True
+
+    def _sync_directory(self) -> None:
+        directory_fd = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
     def save_chunk(self, data: bytes | memoryview) -> str:
         content_hash = hashlib.sha256(data).hexdigest()
         blob_path = self.root / content_hash
 
-        if blob_path.is_file():
+        if self.renew_chunk(content_hash):
             return content_hash
 
         temp_path = None
@@ -54,13 +114,15 @@ class LocalBlobStorage:
             try:
                 os.link(temp_path, blob_path)
             except FileExistsError:
-                pass
-
-            return content_hash
+                if not self.renew_chunk(content_hash):
+                    raise OSError("Chunk disappeared during installation")
 
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
+
+        self._sync_directory()
+        return content_hash
 
     def stream_chunks(self, chunk_hashes: Iterable[str]) -> Iterator[bytes]:
         for chunk_hash in chunk_hashes:

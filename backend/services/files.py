@@ -19,10 +19,11 @@ from backend.services.chunks import (
     get_version_chunk_hashes,
     get_version_chunk_manifest,
     register_manifest_chunks,
-    save_version_chunks,
+    stage_upload_chunks,
     validate_chunk_manifest,
 )
 from backend.services.file_rules import is_valid_file_key
+from backend.services.gc import protect_chunks
 from backend.services.outbox import enqueue_event
 from backend.storage.local import LocalBlobStorage
 from shared.chunking import chunk_file
@@ -90,12 +91,15 @@ def create_file(
         upload = nullcontext((None, expected_hash, expected_size, hasher.hexdigest()))
 
     with upload as (temp_path, content_hash, size, fingerprint):
+        if chunk_hashes is None:
+            chunk_hashes = stage_upload_chunks(session, storage, chunk_file(temp_path))
         existing_file = find_existing_create(session, request_id, fingerprint)
 
         if existing_file is not None:
             return existing_file
 
         try:
+            protect_chunks(session, storage, chunk_hashes)
             saved_file = File(key=key)
             session.add(saved_file)
             session.flush()
@@ -109,16 +113,8 @@ def create_file(
             session.add(version)
             session.flush()
 
-            if chunk_hashes is None:
-                save_version_chunks(
-                    session,
-                    storage,
-                    version.id,
-                    chunk_file(temp_path),
-                )
-            else:
-                register_manifest_chunks(session, storage, chunk_hashes)
-                attach_version_chunks(session, version.id, chunk_hashes)
+            register_manifest_chunks(session, storage, chunk_hashes)
+            attach_version_chunks(session, version.id, chunk_hashes)
 
             enqueue_event(
                 session=session,

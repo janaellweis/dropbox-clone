@@ -178,11 +178,7 @@ class DropboxClient:
         response.raise_for_status()
 
     def _prepare_chunks(self, path: Path) -> dict:
-        """Build an ordered manifest and upload each missing hash once.
-
-        Content buffers are bounded; the manifest grows with the chunk count.
-        The upload pass checks that chunks still match the first-pass manifest.
-        """
+        """Upload missing hashes once; content buffers are bounded, manifests are not."""
         chunk_hashes = []
         content_hash = hashlib.sha256()
         size = 0

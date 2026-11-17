@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.exceptions import FileContentMissingError
 from backend.db.models import Chunk, FileVersionChunk
+from backend.services.gc import install_chunk, protect_chunks
 from backend.storage.local import LocalBlobStorage
 from shared.chunking import Chunk as ContentChunk
 
@@ -30,22 +31,16 @@ def save_version_chunks(
     file_version_id: uuid.UUID,
     chunks: Iterator[ContentChunk],
 ) -> None:
-    for index, chunk in enumerate(chunks):
-        chunk_hash = storage.save_chunk(chunk.data)
+    hashes = stage_upload_chunks(session, storage, chunks)
+    protect_chunks(session, storage, hashes)
+    register_manifest_chunks(session, storage, hashes)
+    attach_version_chunks(session, file_version_id, hashes)
 
-        session.execute(
-            insert(Chunk)
-            .values(hash=chunk_hash, size=chunk.size)
-            .on_conflict_do_nothing(index_elements=["hash"])
-        )
 
-        session.add(
-            FileVersionChunk(
-                file_version_id=file_version_id,
-                chunk_index=index,
-                chunk_hash=chunk_hash,
-            )
-        )
+def stage_upload_chunks(
+    session: Session, storage: LocalBlobStorage, chunks: Iterator[ContentChunk]
+) -> list[str]:
+    return [install_chunk(session.get_bind(), storage, chunk.data) for chunk in chunks]
 
 
 def get_version_chunk_hashes(
@@ -82,14 +77,11 @@ def get_version_chunk_manifest(
 
 
 def get_missing_chunks(
+    session: Session,
     storage: LocalBlobStorage,
     chunk_hashes: list[str],
 ) -> list[str]:
-    return [
-        chunk_hash
-        for chunk_hash in dict.fromkeys(chunk_hashes)
-        if not storage.exists(chunk_hash)
-    ]
+    return protect_chunks(session, storage, chunk_hashes, allow_missing=True)
 
 
 def attach_version_chunks(
@@ -142,7 +134,10 @@ def register_manifest_chunks(
     chunk_hashes: list[str],
 ) -> None:
     for chunk_hash in dict.fromkeys(chunk_hashes):
-        size = len(storage.read(chunk_hash))
+        metadata = storage.file_metadata(chunk_hash)
+        if metadata is None:
+            raise FileContentMissingError(f"Missing chunk: {chunk_hash}")
+        size = metadata.st_size
 
         session.execute(
             insert(Chunk)
