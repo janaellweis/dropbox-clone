@@ -1,5 +1,6 @@
 import hashlib
 from collections.abc import Generator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import httpx
@@ -178,7 +179,7 @@ class DropboxClient:
         response.raise_for_status()
 
     def _prepare_chunks(self, path: Path) -> dict:
-        """Upload missing hashes once; content buffers are bounded, manifests are not."""
+        """Prepare the file manifest and upload missing chunks concurrently."""
         chunk_hashes = []
         content_hash = hashlib.sha256()
         size = 0
@@ -188,26 +189,50 @@ class DropboxClient:
             content_hash.update(chunk.data)
             size += chunk.size
 
-        missing = set(self.get_missing_chunks(list(set(chunk_hashes))))
-
-        if missing:
-            second_pass_count = 0
-
-            for index, chunk in enumerate(chunk_file(path)):
-                if index >= len(chunk_hashes) or chunk.hash != chunk_hashes[index]:
-                    raise OSError("File changed during chunking")
-
-                second_pass_count += 1
-
-                if chunk.hash in missing:
-                    self.upload_chunk(chunk)
-                    missing.remove(chunk.hash)
-
-            if second_pass_count != len(chunk_hashes):
-                raise OSError("File changed during chunking")
-
-        return {
+        manifest = {
             "chunk_hashes": chunk_hashes,
             "content_hash": content_hash.hexdigest(),
             "size": size,
         }
+
+        missing = set(self.get_missing_chunks(list(set(chunk_hashes))))
+
+        if not missing:
+            return manifest
+
+        max_workers = 4
+        pending = set()
+        second_pass_count = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for chunk in chunk_file(path):
+                if (
+                    second_pass_count >= len(chunk_hashes)
+                    or chunk.hash != chunk_hashes[second_pass_count]
+                ):
+                    raise OSError("File changed during chunking")
+
+                second_pass_count += 1
+
+                if chunk.hash not in missing:
+                    continue
+
+                pending.add(pool.submit(self.upload_chunk, chunk))
+                missing.remove(chunk.hash)
+
+                if len(pending) >= max_workers:
+                    done, pending = wait(
+                        pending,
+                        return_when=FIRST_COMPLETED,
+                    )
+
+                    for future in done:
+                        future.result()
+
+            for future in pending:
+                future.result()
+
+        if second_pass_count != len(chunk_hashes):
+            raise OSError("File changed during chunking")
+
+        return manifest

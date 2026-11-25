@@ -1,6 +1,7 @@
 import hashlib
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import BinaryIO
@@ -203,13 +204,31 @@ def _read_verified_range(
     return None
 
 
+def _download_chunk(api: DropboxClient, digest: str, size: int) -> bytes:
+    """Download and verify one chunk."""
+    data = bytearray()
+    hasher = hashlib.sha256()
+
+    with closing(api.iter_chunk_bytes(digest)) as blocks:
+        for block in blocks:
+            if len(data) + len(block) > size:
+                raise DownloadVerificationError("Chunk exceeds manifest size")
+            hasher.update(block)
+            data.extend(block)
+
+    if len(data) != size or hasher.hexdigest() != digest:
+        raise DownloadVerificationError("Chunk size or SHA-256 mismatch")
+
+    return bytes(data)
+
+
 def _assemble_download(
     api: DropboxClient,
     destination: Path,
     temporary: Path,
     chunks: list[tuple[str, int]],
 ) -> None:
-    """Content buffers are bounded; manifests and range indexes grow with chunks."""
+    """Assemble chunks in order with bounded concurrent downloads."""
     local_ranges: dict[str, tuple[int, int]] = {}
     if chunks and destination.is_file():
         offset = 0
@@ -218,40 +237,57 @@ def _assemble_download(
             offset += chunk.size
 
     assembled_ranges: dict[str, tuple[int, int]] = {}
+    max_workers = 4
+
     with ExitStack() as stack:
         source = stack.enter_context(destination.open("rb")) if local_ranges else None
         output = stack.enter_context(temporary.open("w+b"))
-        for digest, size in chunks:
-            offset = output.tell()
-            data = None
-            if digest in assembled_ranges:
-                previous_offset, previous_size = assembled_ranges[digest]
-                data = _read_verified_range(
-                    output, previous_offset, previous_size, digest
-                )
-                output.seek(offset)
-            elif source is not None and digest in local_ranges:
-                local_offset, local_size = local_ranges[digest]
-                if local_size == size:
+        pool = stack.enter_context(ThreadPoolExecutor(max_workers=max_workers))
+
+        for start in range(0, len(chunks), max_workers):
+            batch = chunks[start : start + max_workers]
+            local_data = {}
+            pending = {}
+
+            for digest, size in batch:
+                if digest in local_data or digest in pending:
+                    continue
+
+                data = None
+
+                if digest in assembled_ranges:
+                    previous_offset, previous_size = assembled_ranges[digest]
+                    offset = output.tell()
                     data = _read_verified_range(
-                        source, local_offset, local_size, digest
+                        output, previous_offset, previous_size, digest
                     )
-            if data is not None:
+                    output.seek(offset)
+                elif source is not None and digest in local_ranges:
+                    local_offset, local_size = local_ranges[digest]
+                    if local_size == size:
+                        data = _read_verified_range(
+                            source, local_offset, local_size, digest
+                        )
+
+                if data is not None:
+                    local_data[digest] = data
+                else:
+                    pending[digest] = pool.submit(_download_chunk, api, digest, size)
+
+            for digest, size in batch:
+                offset = output.tell()
+
+                if digest in local_data:
+                    data = local_data[digest]
+                else:
+                    data = pending[digest].result()
+
                 output.write(data)
-            else:
-                count = 0
-                hasher = hashlib.sha256()
-                with closing(api.iter_chunk_bytes(digest)) as blocks:
-                    for block in blocks:
-                        count += len(block)
-                        if count > size:
-                            raise DownloadVerificationError(
-                                "Chunk exceeds manifest size"
-                            )
-                        hasher.update(block)
-                        output.write(block)
-                if count != size or hasher.hexdigest() != digest:
-                    raise DownloadVerificationError("Chunk size or SHA-256 mismatch")
-            assembled_ranges[digest] = (offset, size)
+                assembled_ranges[digest] = (offset, size)
+
+            local_data.clear()
+            pending.clear()
+            del data
+
         output.flush()
         os.fsync(output.fileno())
