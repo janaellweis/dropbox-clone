@@ -1,46 +1,47 @@
 from __future__ import annotations
 
 import logging
+import signal
 from pathlib import Path
+from threading import Event
 from time import monotonic
+
+import httpx
 
 from client.api import DropboxClient
 from client.core.exceptions import FileChangedDuringScanError, SyncConflictError
-from client.detection.scanner import scan_folder, update_snapshot
+from client.detection.scanner import scan_folder, update_directories, update_snapshot
 from client.detection.tracker import ChangeTracker, PendingChanges
 from client.detection.watcher import FileWatcher
 from client.services.sync import sync_folder
 
 logger = logging.getLogger(__name__)
 
-FULL_SCAN_INTERVAL = 60.0
 DEBOUNCE_INTERVAL = 0.5
 MAX_DEBOUNCE_WAIT = 2.0
 
 
 def collect_changes(tracker: ChangeTracker) -> PendingChanges:
     changed_paths: set[str] = set()
-    full_rescan_required = False
+    directories: set[str] = set()
     deadline = monotonic() + MAX_DEBOUNCE_WAIT
 
     while True:
         pending = tracker.take_pending()
         changed_paths.update(pending.paths)
-        full_rescan_required |= pending.full_rescan_required
+        directories.update(pending.directories)
 
-        debounce_timeout = min(
+        timeout = min(
             DEBOUNCE_INTERVAL,
             max(0.0, deadline - monotonic()),
         )
 
-        if debounce_timeout == 0 or not tracker.wait_for_changes(
-            timeout=debounce_timeout
-        ):
+        if timeout == 0 or not tracker.wait_for_changes(timeout=timeout):
             break
 
     return PendingChanges(
         paths=frozenset(changed_paths),
-        full_rescan_required=full_rescan_required,
+        directories=frozenset(directories),
     )
 
 
@@ -55,32 +56,33 @@ def run(
     root = Path(folder).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
+    stopping = Event()
     tracker = ChangeTracker()
+
+    def request_shutdown(signum, frame):
+        stopping.set()
+        tracker.stop()
+
+    previous_handler = signal.signal(signal.SIGTERM, request_shutdown)
     watcher = FileWatcher(root, tracker)
 
     local_snapshot = None
     next_remote_poll = monotonic()
-    next_full_scan = monotonic()
-
-    watcher.start()
-    logger.info("Watching %s", root)
 
     try:
-        while True:
-            now = monotonic()
-            full_scan_due = local_snapshot is None or now >= next_full_scan
+        watcher.start()
+        logger.info("Watching %s", root)
 
-            if full_scan_due:
+        while not stopping.is_set():
+            if local_snapshot is None:
                 # Drain earlier notifications before scanning.
                 # Events arriving during the scan remain pending.
                 tracker.take_pending()
+
                 try:
                     local_snapshot = scan_folder(str(root))
                 except (FileChangedDuringScanError, OSError):
                     logger.exception("Full scan failed; will retry")
-                    local_snapshot = None
-                else:
-                    next_full_scan = monotonic() + FULL_SCAN_INTERVAL
 
             if local_snapshot is not None:
                 try:
@@ -90,44 +92,51 @@ def run(
                         local_snapshot,
                     )
                     logger.info("Sync completed")
-
-                except SyncConflictError as exc:
-                    logger.warning("Sync conflict: %s", exc)
+                except SyncConflictError:
+                    logger.exception("Sync stopped due to unresolved conflict")
+                    raise
+                except httpx.TransportError:
+                    logger.warning("Network unavailable; retrying on next sync cycle")
                     local_snapshot = None
-
                 except Exception:
-                    logger.exception("Sync failed; will retry")
-                    local_snapshot = None
+                    logger.exception("Sync stopped after failure")
+                    raise
 
-            next_remote_poll = monotonic() + interval
-            # An invalid snapshot already requires a full scan on the next
-            # attempt; an expired scan deadline must not bypass the retry wait.
-            deadline = (
-                next_remote_poll
-                if local_snapshot is None
-                else min(next_remote_poll, next_full_scan)
-            )
-            timeout = max(0.0, deadline - monotonic())
+            if stopping.is_set():
+                break
+
+            # Schedule the next poll independently of local events.
+            now = monotonic()
+            if now >= next_remote_poll:
+                next_remote_poll = now + interval
+
+            timeout = max(0.0, next_remote_poll - monotonic())
 
             if not tracker.wait_for_changes(timeout=timeout):
                 continue
 
+            if stopping.is_set():
+                break
+
             pending = collect_changes(tracker)
 
-            if pending.full_rescan_required:
-                local_snapshot = None
-            elif local_snapshot is not None and pending.paths:
+            if local_snapshot is not None:
                 try:
-                    local_snapshot = update_snapshot(
-                        root,
-                        local_snapshot,
-                        pending.paths,
-                    )
+                    if pending.directories:
+                        local_snapshot = update_directories(
+                            root, local_snapshot, pending.directories
+                        )
+                    if pending.paths:
+                        local_snapshot = update_snapshot(
+                            root, local_snapshot, pending.paths
+                        )
                 except Exception:
-                    logger.exception("Targeted scan failed; requesting full scan")
-                    local_snapshot = None
+                    logger.exception("Targeted scan failed; stopping")
+                    raise
 
     except KeyboardInterrupt:
         logger.info("Stopping synchronization")
     finally:
         watcher.stop()
+        signal.signal(signal.SIGTERM, previous_handler)
+        logger.info("Synchronization stopped")

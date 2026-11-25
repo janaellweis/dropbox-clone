@@ -14,11 +14,11 @@ from backend.core.exceptions import (
 )
 
 
-def make_handler(status_code: int) -> Callable:
+def make_handler(status_code: int, error_code: str) -> Callable:
     def handler(request: Request, exc: Exception) -> JSONResponse:
         return JSONResponse(
             status_code=status_code,
-            content={"detail": str(exc)},
+            content={"detail": str(exc), "code": error_code},
         )
 
     return handler
@@ -38,5 +38,5 @@ def register_exception_handlers(app: FastAPI) -> None:
     for exception_class, status_code in error_statuses.items():
         app.add_exception_handler(
             exception_class,
-            make_handler(status_code),
+            make_handler(status_code, exception_class.__name__),
         )

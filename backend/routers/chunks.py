@@ -1,37 +1,33 @@
-import hashlib
 from collections.abc import Iterator
-from typing import BinaryIO
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from backend.core.chunk_validation import validate_chunk_hashes
 from backend.dependencies import get_db, get_storage
 from backend.schemas.chunks import MissingChunksRequest
-from backend.services.chunks import get_missing_chunks
-from backend.services.gc import install_chunk
+from backend.services.chunks import (
+    get_missing_chunks,
+    store_verified_chunk,
+    stream_chunk,
+)
 from backend.storage.local import LocalBlobStorage
 from shared.chunking import MAX_CHUNK_SIZE
 
 router = APIRouter(prefix="/chunks", tags=["chunks"])
 
 
-def _validate_chunk_hash(chunk_hash: str) -> None:
-    if len(chunk_hash) != 64 or any(
-        character not in "0123456789abcdef" for character in chunk_hash
-    ):
-        raise HTTPException(status_code=422, detail="Invalid chunk hash")
-
-
-def _open_chunk(
+def _chunk_stream(
     chunk_hash: str,
     storage: LocalBlobStorage = Depends(get_storage),
-) -> Iterator[BinaryIO]:
-    _validate_chunk_hash(chunk_hash)
+) -> Iterator[Iterator[bytes]]:
     try:
-        with storage.open_verified_chunk(chunk_hash) as content:
+        with stream_chunk(storage, chunk_hash) as content:
             yield content
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid chunk hash") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Chunk not found") from exc
     except OSError as exc:
@@ -39,10 +35,12 @@ def _open_chunk(
 
 
 @router.get("/{chunk_hash}")
-def download_chunk(content: BinaryIO = Depends(_open_chunk)) -> StreamingResponse:
+def download_chunk(
+    content: Iterator[bytes] = Depends(_chunk_stream),
+) -> StreamingResponse:
     # The dependency keeps the verified file open until streaming finishes.
     return StreamingResponse(
-        iter(lambda: content.read(1024 * 1024), b""),
+        content,
         media_type="application/octet-stream",
     )
 
@@ -63,7 +61,10 @@ async def upload_chunk(
     session: Session = Depends(get_db),
     storage: LocalBlobStorage = Depends(get_storage),
 ):
-    _validate_chunk_hash(chunk_hash)
+    try:
+        validate_chunk_hashes([chunk_hash])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid chunk hash") from exc
 
     size = 0
     # A fixed buffer avoids a second full chunk copy; ASGI owns incoming pieces.
@@ -75,9 +76,14 @@ async def upload_chunk(
             data[size:end] = piece
             size = end
 
-        if hashlib.sha256(data[:size]).hexdigest() != chunk_hash:
-            raise HTTPException(status_code=422, detail="Chunk hash mismatch")
-
-        await run_in_threadpool(install_chunk, session.get_bind(), storage, data[:size])
-
+        try:
+            await run_in_threadpool(
+                store_verified_chunk,
+                session,
+                storage,
+                chunk_hash,
+                data[:size],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"hash": chunk_hash}

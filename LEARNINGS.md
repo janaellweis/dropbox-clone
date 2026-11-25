@@ -43,7 +43,7 @@ Instead of treating the Dropbox clone as one big project, I broke it down into c
 - Storage for file contents
 - Service layer for the actual logic
 - Client for uploading and downloading files
-- Sync engine (next)
+- Sync engine
 
 This helped me understand what each component is responsible for and how they communicate.
 
@@ -275,3 +275,16 @@ periodic full scans are still needed to detect missed changes and correct incons
 
 *Different applications need different chunking strategies.
 *CDC is particularly useful for file synchronization.
+
+## Circular Imports
+when two modules depend on each other, directly or indirectly. Python starts loading a module before all its code has finished running so if f another module tries to import something from it during that process, it might receive a partially initialized module.
+
+can cause import errors because the class or function hasn't been defined yet.
+
+## early returns
+isntead of having everything inside nested if/else statements, we can check invalid conditions first and return immediately, these checks are called guard clauses.
+
+they reduce unnecessary nesting and make the main logic easier to follow and make it easier to understand why a function stopped
+
+## Prymaid of doom
+pyramid of doom happens when code has too many nested conditions, making it harder to read and understand so each new condition adds another indentation level which will increase the complexity because we need to track multiple conditions at once.

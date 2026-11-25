@@ -20,7 +20,7 @@ from backend.services.chunks import (
     get_version_chunk_manifest,
     register_manifest_chunks,
     stage_upload_chunks,
-    validate_chunk_manifest,
+    validate_protected_manifest,
 )
 from backend.services.file_rules import is_valid_file_key
 from backend.services.gc import protect_chunks
@@ -66,40 +66,49 @@ def create_file(
     expected_hash: str | None = None,
     expected_size: int | None = None,
 ) -> File:
-    if not is_valid_file_key(key):
-        raise InvalidFilePathError("Invalid file path")
+    try:
+        if not is_valid_file_key(key):
+            raise InvalidFilePathError("Invalid file path")
 
-    fingerprint_prefix = b"CREATE\0" + key.encode("utf-8") + b"\0"
+        fingerprint_prefix = b"CREATE\0" + key.encode("utf-8") + b"\0"
 
-    if chunk_hashes is None:
-        if content is None:
-            raise ValueError("File content is required")
-
-        upload = storage.stage_upload(content, fingerprint_prefix)
-    else:
-        if expected_hash is None or expected_size is None:
-            raise ValueError("Manifest metadata is required")
-
-        validate_chunk_manifest(storage, chunk_hashes, expected_hash, expected_size)
-
-        hasher = hashlib.sha256()
-        hasher.update(fingerprint_prefix)
-
-        for data in storage.stream_chunks(chunk_hashes):
-            hasher.update(data)
-
-        upload = nullcontext((None, expected_hash, expected_size, hasher.hexdigest()))
-
-    with upload as (temp_path, content_hash, size, fingerprint):
         if chunk_hashes is None:
-            chunk_hashes = stage_upload_chunks(session, storage, chunk_file(temp_path))
-        existing_file = find_existing_create(session, request_id, fingerprint)
+            if content is None:
+                raise ValueError("File content is required")
 
-        if existing_file is not None:
-            return existing_file
+            upload = storage.stage_upload(content, fingerprint_prefix)
+        else:
+            if expected_hash is None or expected_size is None:
+                raise ValueError("Manifest metadata is required")
 
-        try:
+            validate_protected_manifest(
+                session, storage, chunk_hashes, expected_hash, expected_size
+            )
+
+            hasher = hashlib.sha256()
+            hasher.update(fingerprint_prefix)
+
+            for data in storage.stream_chunks(chunk_hashes):
+                hasher.update(data)
+
+            upload = nullcontext(
+                (None, expected_hash, expected_size, hasher.hexdigest())
+            )
+
+        with upload as (temp_path, content_hash, size, fingerprint):
+            if chunk_hashes is None:
+                chunk_hashes = stage_upload_chunks(
+                    session, storage, chunk_file(temp_path)
+                )
+
+            existing_file = find_existing_create(session, request_id, fingerprint)
+
+            if existing_file is not None:
+                session.rollback()
+                return existing_file
+
             protect_chunks(session, storage, chunk_hashes)
+
             saved_file = File(key=key)
             session.add(saved_file)
             session.flush()
@@ -129,27 +138,27 @@ def create_file(
             session.commit()
             return saved_file
 
-        except IntegrityError as exc:
-            session.rollback()
+    except IntegrityError as exc:
+        session.rollback()
 
-            existing_file = find_existing_create(session, request_id, fingerprint)
-            if existing_file is not None:
-                return existing_file
+        existing_file = find_existing_create(session, request_id, fingerprint)
+        if existing_file is not None:
+            return existing_file
 
-            constraint_name = getattr(
-                getattr(exc.orig, "diag", None),
-                "constraint_name",
-                None,
-            )
+        constraint_name = getattr(
+            getattr(exc.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
 
-            if constraint_name == "uq_files_active_key":
-                raise FileAlreadyExistsError("File path already exists") from exc
+        if constraint_name == "uq_files_active_key":
+            raise FileAlreadyExistsError("File path already exists") from exc
 
-            raise
+        raise
 
-        except Exception:
-            session.rollback()
-            raise
+    except Exception:
+        session.rollback()
+        raise
 
 
 def get_file_content(

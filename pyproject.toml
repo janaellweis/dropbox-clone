@@ -8,3 +8,5 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [".git", ".venv", "tests_backup"]
+
+addopts = "--import-mode=importlib"

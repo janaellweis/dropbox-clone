@@ -14,6 +14,85 @@ from client.core.exceptions import (
 from shared.chunking import MAX_CHUNK_SIZE, chunk_file
 
 
+def download_verified(
+    api: DropboxClient,
+    root: Path,
+    relative_path: str,
+    file_id: str,
+    expected_version: int,
+    expected_local_hash: str | None = None,
+    expected_content_hash: str | None = None,
+    expected_size: int | None = None,
+) -> dict:
+    destination = safe_local_path(root, relative_path)
+
+    verify_destination(destination, expected_local_hash)
+    content_hash, size, chunks = _validate_manifest(
+        api.get_file_manifest(file_id, expected_version),
+        file_id,
+        expected_version,
+        expected_content_hash,
+        expected_size,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".sync-download-",
+        dir=destination.parent,
+    )
+    os.close(fd)
+
+    temporary = Path(temporary_name)
+
+    try:
+        _assemble_download(api, destination, temporary, chunks)
+        if temporary.stat().st_size != size or file_hash(temporary) != content_hash:
+            raise DownloadVerificationError(
+                f"Assembled file hash or size mismatch: {relative_path}"
+            )
+        metadata = api.get_file_metadata(file_id)
+
+        if metadata["file_id"] != file_id:
+            raise DownloadVerificationError(
+                f"Unexpected downloaded file identity: {relative_path}"
+            )
+
+        if metadata["content_hash"] != content_hash or metadata["size"] != size:
+            raise DownloadVerificationError(
+                f"Downloaded content differs from saved target: {relative_path}"
+            )
+
+        if metadata["version"] != expected_version:
+            raise DownloadVerificationError(
+                f"Remote file changed during download: {relative_path}"
+            )
+
+        if metadata["key"] != relative_path:
+            raise DownloadVerificationError(
+                f"Remote file renamed during download: {relative_path}"
+            )
+
+        verify_destination(destination, expected_local_hash)
+        temporary.replace(destination)
+
+        if os.name == "posix":
+            directory_fd = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+        return {
+            "file_id": file_id,
+            "version": metadata["version"],
+            "hash": metadata["content_hash"],
+            "size": metadata["size"],
+        }
+
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def safe_local_path(root: Path, relative_path: str) -> Path:
     path = Path(relative_path)
 
@@ -176,82 +255,3 @@ def _assemble_download(
             assembled_ranges[digest] = (offset, size)
         output.flush()
         os.fsync(output.fileno())
-
-
-def download_verified(
-    api: DropboxClient,
-    root: Path,
-    relative_path: str,
-    file_id: str,
-    expected_version: int,
-    expected_local_hash: str | None = None,
-    expected_content_hash: str | None = None,
-    expected_size: int | None = None,
-) -> dict:
-    destination = safe_local_path(root, relative_path)
-
-    verify_destination(destination, expected_local_hash)
-    content_hash, size, chunks = _validate_manifest(
-        api.get_file_manifest(file_id, expected_version),
-        file_id,
-        expected_version,
-        expected_content_hash,
-        expected_size,
-    )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=".sync-download-",
-        dir=destination.parent,
-    )
-    os.close(fd)
-
-    temporary = Path(temporary_name)
-
-    try:
-        _assemble_download(api, destination, temporary, chunks)
-        if temporary.stat().st_size != size or file_hash(temporary) != content_hash:
-            raise DownloadVerificationError(
-                f"Assembled file hash or size mismatch: {relative_path}"
-            )
-        metadata = api.get_file_metadata(file_id)
-
-        if metadata["file_id"] != file_id:
-            raise DownloadVerificationError(
-                f"Unexpected downloaded file identity: {relative_path}"
-            )
-
-        if metadata["content_hash"] != content_hash or metadata["size"] != size:
-            raise DownloadVerificationError(
-                f"Downloaded content differs from saved target: {relative_path}"
-            )
-
-        if metadata["version"] != expected_version:
-            raise DownloadVerificationError(
-                f"Remote file changed during download: {relative_path}"
-            )
-
-        if metadata["key"] != relative_path:
-            raise DownloadVerificationError(
-                f"Remote file renamed during download: {relative_path}"
-            )
-
-        verify_destination(destination, expected_local_hash)
-        temporary.replace(destination)
-
-        if os.name == "posix":
-            directory_fd = os.open(destination.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-
-        return {
-            "file_id": file_id,
-            "version": metadata["version"],
-            "hash": metadata["content_hash"],
-            "size": metadata["size"],
-        }
-
-    finally:
-        temporary.unlink(missing_ok=True)

@@ -1,6 +1,8 @@
 import argparse
+import logging
 
 from client.api import DropboxClient
+from client.core.exceptions import SyncConflictError
 from client.runner import run
 
 
@@ -28,8 +30,18 @@ def main():
 
     args = parser.parse_args()
 
-    with DropboxClient(args.server) as api:
-        run(api, args.folder, args.interval)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    try:
+        with DropboxClient(args.server) as api:
+            run(api, args.folder, args.interval)
+    except SyncConflictError:
+        logging.getLogger(__name__).error(
+            "Synchronization stopped: manual intervention required"
+        )
 
 
 if __name__ == "__main__":

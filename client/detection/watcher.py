@@ -30,9 +30,14 @@ class SyncEventHandler(FileSystemEventHandler):
         if relative is not None:
             self.tracker.mark_changed(relative)
 
+    def _track_directory(self, path: str) -> None:
+        relative = self._relative_path(path)
+        if relative is not None:
+            self.tracker.mark_directory(relative)
+
     def on_created(self, event: FileSystemEvent) -> None:
         if event.is_directory:
-            self.tracker.request_full_rescan()
+            self._track_directory(event.src_path)
         else:
             self._track(event.src_path)
 
@@ -42,25 +47,23 @@ class SyncEventHandler(FileSystemEventHandler):
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         if event.is_directory:
-            self.tracker.request_full_rescan()
+            self._track_directory(event.src_path)
         else:
             self._track(event.src_path)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if event.is_directory:
-            self.tracker.request_full_rescan()
+            self._track_directory(event.src_path)
+            self._track_directory(event.dest_path)
             return
 
         source = self._relative_path(event.src_path)
         destination = self._relative_path(event.dest_path)
 
-        if source is not None and destination is not None:
-            self.tracker.mark_moved(source, destination)
-        else:
-            if source is not None:
-                self.tracker.mark_changed(source)
-            if destination is not None:
-                self.tracker.mark_changed(destination)
+        paths = [path for path in (source, destination) if path is not None]
+
+        if paths:
+            self.tracker.mark_changed(*paths)
 
 
 class FileWatcher:

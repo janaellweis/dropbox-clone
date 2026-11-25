@@ -1,28 +1,45 @@
 import hashlib
-import re
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from backend.core.chunk_validation import validate_chunk_hashes
 from backend.core.exceptions import FileContentMissingError
 from backend.db.models import Chunk, FileVersionChunk
-from backend.services.gc import install_chunk, protect_chunks
+from backend.services.gc import (
+    acquire_chunk_shared_locks,
+    protect_chunks,
+    store_chunk_with_gc_protection,
+)
 from backend.storage.local import LocalBlobStorage
 from shared.chunking import Chunk as ContentChunk
 
 
-def validate_chunk_hashes(chunk_hashes: list[str]) -> list[str]:
-    """Check the entire list before any hash can become a storage path."""
-    if any(
-        not isinstance(chunk_hash, str)
-        or re.fullmatch(r"[0-9a-f]{64}", chunk_hash) is None
-        for chunk_hash in chunk_hashes
-    ):
-        raise ValueError("Invalid SHA-256 chunk hash")
-    return chunk_hashes
+@contextmanager
+def stream_chunk(
+    storage: LocalBlobStorage, chunk_hash: str
+) -> Iterator[Iterator[bytes]]:
+    validate_chunk_hashes([chunk_hash])
+    with storage.open_verified_chunk(chunk_hash) as content:
+        yield iter(lambda: content.read(1024 * 1024), b"")
+
+
+def store_verified_chunk(
+    session: Session,
+    storage: LocalBlobStorage,
+    chunk_hash: str,
+    data: memoryview,
+) -> None:
+    validate_chunk_hashes([chunk_hash])
+
+    if hashlib.sha256(data).hexdigest() != chunk_hash:
+        raise ValueError("Chunk hash mismatch")
+
+    store_chunk_with_gc_protection(session.get_bind(), storage, data)
 
 
 def save_version_chunks(
@@ -40,7 +57,10 @@ def save_version_chunks(
 def stage_upload_chunks(
     session: Session, storage: LocalBlobStorage, chunks: Iterator[ContentChunk]
 ) -> list[str]:
-    return [install_chunk(session.get_bind(), storage, chunk.data) for chunk in chunks]
+    return [
+        store_chunk_with_gc_protection(session.get_bind(), storage, chunk.data)
+        for chunk in chunks
+    ]
 
 
 def get_version_chunk_hashes(
@@ -144,3 +164,14 @@ def register_manifest_chunks(
             .values(hash=chunk_hash, size=size)
             .on_conflict_do_nothing(index_elements=["hash"])
         )
+
+
+def validate_protected_manifest(
+    session: Session,
+    storage: LocalBlobStorage,
+    chunk_hashes: list[str],
+    expected_hash: str,
+    expected_size: int,
+) -> None:
+    acquire_chunk_shared_locks(session, chunk_hashes)
+    validate_chunk_manifest(storage, chunk_hashes, expected_hash, expected_size)

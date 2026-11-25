@@ -59,109 +59,105 @@ The backend uses SQLAlchemy connection pooling, with `pool_pre_ping=True` to che
 
 Not every failure can be resolved automatically. Some ambiguous conflicts or invalidated operations still need intervention. Also, chunk files aren't part of PostgreSQL transactions, so failed operations can leave unreferenced chunks. Garbage collection periodically removes chunks that are no longer referenced, after a 30-day inactivity period.
 
+## Running the Project with Docker
 
-## Running the Project
+Docker Compose runs PostgreSQL, FastAPI, Celery Worker, Celery Beat, and two synchronization clients.
 
-These commands are for running the project locally. You'll need Python 3.13, Docker with PostgreSQL 17, and a filesystem that supports hard links.
+### First-Time Setup
 
-Once the server, workers, and clients are running, file synchronization happens automatically.
+To run the project, you need Docker and Docker Compose installed.
 
-## 1. Install dependencies
+1. Clone the repository and open the project folder.
 
-Run these commands from the project root:
+   ```bash
+   git clone https://github.com/janaellweis/dropbox-clone.git
+   cd dropbox-clone
+   ```
+
+2. Create two folders for the synchronization clients.
+
+   ```bash
+   mkdir -p client-a client-b
+   ```
+
+3. Build and start the services.
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   Docker Compose starts PostgreSQL, runs the database migrations, and starts FastAPI, Celery Worker, Celery Beat, and both clients.
+
+4. Check that the services are running.
+
+   ```bash
+   docker compose ps
+   ```
+
+   The API documentation is available at http://localhost:8001/docs.
+### Testing File Synchronization
+
+Once both clients are running, create a file in the first client's folder:
 
 ```bash
-python3.13 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+echo "Hello Dropbox" > client-a/hello.txt
 ```
 
-## 2. Start PostgreSQL
+The file should automatically appear in `client-b/hello.txt` after synchronization.
 
-Start the database using Docker Compose:
+You can also edit, rename, or delete files in either folder. The other client should eventually reflect those changes.
+
+To monitor synchronization:
+
+```bash
+docker compose logs -f client-a client-b
+```
+
+### Managing the Project
+
+**Start the services:**
 
 ```bash
 docker compose up -d
 ```
 
-Set the database and storage paths in each terminal that runs the backend:
+**Rebuild after changing the code:**
 
 ```bash
-export DATABASE_URL='postgresql+psycopg://dropbox:dropbox_dev@127.0.0.1:5432/dropbox'
-export BLOB_STORAGE_PATH="$PWD/data/blobs"
+docker compose up -d --build
 ```
 
-Make sure these database credentials match the settings in `compose.yaml`.
-
-## 3. Start the backend
-
-Apply the database migrations:
+**Check running services:**
 
 ```bash
-python -m alembic upgrade head
+docker compose ps
 ```
 
-Start the FastAPI server:
+**View all service logs:**
 
 ```bash
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
+docker compose logs -f
 ```
 
-API documentation: http://127.0.0.1:8001/docs
-
-## 4. Start Celery
-
-Celery handles publishing file changes to the change journal, so other clients can detect them.
-
-Start the worker in a separate terminal:
+You can also view logs for a specific service:
 
 ```bash
-python -m celery -A backend.workers.celery_app:celery_app worker \
-  --loglevel=info --queues=journal,gc --pool=solo
+docker compose logs -f api
+docker compose logs -f worker
+docker compose logs -f beat
+docker compose logs -f client-a
+docker compose logs -f client-b
 ```
 
-GC runs daily at 03:00 UTC. Its default inactivity grace period is 30 days;
-set `GC_GRACE_DAYS` in the worker environment to change it.
-
-Start Celery Beat in another terminal:
+**Stop the project:**
 
 ```bash
-python -m celery -A backend.workers.celery_app:celery_app beat --loglevel=info
+docker compose down
 ```
 
-Make sure both terminals have the virtual environment activated and the same backend environment variables set.
-
-Beat schedules the publishing task every five seconds, while the worker processes pending events.
-
-## 5. Start two clients
-
-Run each client in a separate terminal with a different folder.
-
-Client A:
-
-```bash
-python -m client --folder /tmp/dropbox-example-a \
-  --server http://127.0.0.1:8001 --interval 5
-```
-
-Client B:
-
-```bash
-python -m client --folder /tmp/dropbox-example-b \
-  --server http://127.0.0.1:8001 --interval 5
-```
-
-Use fresh folders and activate the virtual environment in both terminals.
-
-## 6. Try syncing files
-
-Once everything is running, create a file in Client A's folder. The client will automatically detect and upload it, and Client B will download it after receiving the update.
-
-You can also try editing, renaming, and deleting files to see how the clients synchronize.
-
-The clients keep their synchronization state and pending operations on disk, allowing them to recover from supported interruptions after restarting.
-
+This stops and removes the project's containers and network while preserving the database and blob storage volumes.
 
 ## Limitations
-- Transfers are sequential, and large manifests can use significant memory.
-- More performance work and production process management are future improvements.
+- File transfers are sequential, and large manifests can use significant memory.
+- Interrupted uploads can be recovered automatically, but interrupted downloads, renames, and deletes remain pending.
+- More performance optimization, automatic recovery for local operations, and production process management are future improvements.

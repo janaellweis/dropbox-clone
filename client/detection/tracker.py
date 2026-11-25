@@ -5,43 +5,44 @@ from threading import Condition
 @dataclass(frozen=True)
 class PendingChanges:
     paths: frozenset[str]
-    full_rescan_required: bool
+    directories: frozenset[str]
 
 
 class ChangeTracker:
     def __init__(self) -> None:
         self._condition = Condition()
         self._paths: set[str] = set()
-        self._full_rescan_required = False
+        self._directories: set[str] = set()
+        self._stopping = False
 
-    def mark_changed(self, path: str) -> None:
+    def mark_changed(self, *paths: str) -> None:
         with self._condition:
-            self._paths.add(path)
+            self._paths.update(paths)
             self._condition.notify()
 
-    def mark_moved(self, source: str, destination: str) -> None:
+    def mark_directory(self, *paths: str) -> None:
         with self._condition:
-            self._paths.update((source, destination))
-            self._condition.notify()
-
-    def request_full_rescan(self) -> None:
-        with self._condition:
-            self._full_rescan_required = True
+            self._directories.update(paths)
             self._condition.notify()
 
     def take_pending(self) -> PendingChanges:
         with self._condition:
             pending = PendingChanges(
                 paths=frozenset(self._paths),
-                full_rescan_required=self._full_rescan_required,
+                directories=frozenset(self._directories),
             )
             self._paths.clear()
-            self._full_rescan_required = False
+            self._directories.clear()
             return pending
+
+    def stop(self) -> None:
+        with self._condition:
+            self._stopping = True
+            self._condition.notify_all()
 
     def wait_for_changes(self, timeout: float | None = None) -> bool:
         with self._condition:
             return self._condition.wait_for(
-                lambda: bool(self._paths) or self._full_rescan_required,
+                lambda: self._stopping or bool(self._paths) or bool(self._directories),
                 timeout=timeout,
             )

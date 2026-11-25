@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from collections.abc import Callable, Iterator
@@ -10,12 +11,13 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from backend.core.chunk_validation import validate_chunk_hashes
 from backend.core.exceptions import FileContentMissingError
 from backend.db.models import FileVersion, FileVersionChunk
 from backend.storage.local import LocalBlobStorage
 
 GC_GRACE_PERIOD = timedelta(days=30)
-GC_LOCK_KEY = 742003
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,18 +31,38 @@ def resolve_grace_period(value: timedelta | None = None) -> timedelta:
     return value
 
 
-def acquire_chunk_lock(session: Session) -> None:
-    """Acquire before row locks; the caller retains it through commit/rollback."""
+def chunk_lock_key(chunk_hash: str) -> int:
+    """Generate a stable PostgreSQL advisory lock key from a chunk hash."""
+    return int.from_bytes(
+        bytes.fromhex(chunk_hash[:16]),
+        byteorder="big",
+        signed=True,
+    )
+
+
+def acquire_chunk_shared_locks(
+    session: Session,
+    hashes: list[str],
+) -> None:
+    """Hold shared locks until the transaction commits or rolls back."""
+    validate_chunk_hashes(hashes)
+
+    keys = sorted({chunk_lock_key(digest) for digest in hashes})
+
     with session.no_autoflush:
-        session.execute(select(func.pg_advisory_xact_lock_shared(GC_LOCK_KEY)))
+        for key in keys:
+            session.execute(select(func.pg_advisory_xact_lock_shared(key)))
 
 
-def install_chunk(
-    bind: Engine | Connection, storage: LocalBlobStorage, data: bytes | memoryview
+def store_chunk_with_gc_protection(
+    bind: Engine | Connection,
+    storage: LocalBlobStorage,
+    data: bytes | memoryview,
 ) -> str:
-    # A separate short transaction never commits the caller's pending metadata.
+    digest = hashlib.sha256(data).hexdigest()
+
     with Session(bind=bind) as session, session.begin():
-        acquire_chunk_lock(session)
+        acquire_chunk_shared_locks(session, [digest])
         return storage.save_chunk(data)
 
 
@@ -51,16 +73,15 @@ def protect_chunks(
     *,
     allow_missing: bool = False,
 ) -> list[str]:
-    from backend.services.chunks import validate_chunk_hashes
+    acquire_chunk_shared_locks(session, hashes)
 
-    validate_chunk_hashes(hashes)
-    acquire_chunk_lock(session)
     missing = []
     for digest in dict.fromkeys(hashes):
         if not storage.renew_chunk(digest):
             if not allow_missing:
                 raise FileContentMissingError(f"Missing chunk: {digest}")
             missing.append(digest)
+
     return missing
 
 
@@ -89,7 +110,6 @@ def collect_garbage(
     max_deletions: int = 1000,
     max_seconds: float = 60,
 ) -> dict:
-    from backend.services.chunks import validate_chunk_hashes
 
     grace_period = resolve_grace_period(grace_period)
     if type(batch_size) is not int or not 1 <= batch_size <= 1000:
@@ -126,11 +146,13 @@ def collect_garbage(
                 with session_factory() as session, session.begin():
                     if session.connection().get_isolation_level() != "READ COMMITTED":
                         raise ValueError("GC requires READ COMMITTED isolation")
+
                     if not session.scalar(
-                        select(func.pg_try_advisory_xact_lock(GC_LOCK_KEY))
+                        select(func.pg_try_advisory_xact_lock(chunk_lock_key(digest)))
                     ):
                         summary["busy_count"] += 1
                         continue
+
                     metadata = storage.file_metadata(digest)
                     if metadata is None or metadata.st_mtime_ns > cutoff_ns:
                         continue
@@ -166,7 +188,6 @@ def iter_gc_report(
     grace_period: timedelta | None = None,
 ) -> Iterator[dict]:
     """Observe only; age-eligible means a canonical regular file past the cutoff."""
-    from backend.services.chunks import validate_chunk_hashes
 
     if type(batch_size) is not int or not 1 <= batch_size <= 1000:
         raise ValueError("batch_size must be between 1 and 1000")
@@ -206,3 +227,60 @@ def iter_gc_report(
         "eligible_count": eligible,
         "total_size_bytes": total_size,
     }
+
+
+def cleanup_orphan_chunk_metadata(
+    session_factory: Callable[[], Session],
+    storage: LocalBlobStorage,
+    *,
+    batch_size: int = 100,
+) -> dict:
+    """Remove unreferenced chunk metadata only after its file is gone."""
+    from sqlalchemy import delete
+
+    from backend.db.models import Chunk
+
+    if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+        raise ValueError("batch_size must be between 1 and 1000")
+
+    deleted = 0
+    busy = 0
+    last_hash = None
+
+    while True:
+        with session_factory() as session:
+            statement = select(Chunk.hash).order_by(Chunk.hash).limit(batch_size)
+
+            if last_hash is not None:
+                statement = statement.where(Chunk.hash > last_hash)
+
+            hashes = list(session.scalars(statement))
+
+        if not hashes:
+            break
+
+        for digest in hashes:
+            with session_factory() as session, session.begin():
+                if session.connection().get_isolation_level() != "READ COMMITTED":
+                    raise ValueError("Cleanup requires READ COMMITTED isolation")
+
+                locked = session.scalar(
+                    select(func.pg_try_advisory_xact_lock(chunk_lock_key(digest)))
+                )
+
+                if not locked:
+                    busy += 1
+                    continue
+
+                if referenced_hashes(session, [digest]):
+                    continue
+
+                if storage.file_metadata(digest) is not None:
+                    continue
+
+                result = session.execute(delete(Chunk).where(Chunk.hash == digest))
+                deleted += result.rowcount
+
+        last_hash = hashes[-1]
+
+    return {"deleted_count": deleted, "busy_count": busy}
