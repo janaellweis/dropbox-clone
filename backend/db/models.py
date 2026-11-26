@@ -112,6 +112,45 @@ class FileVersion(Base):
     )
 
 
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    hash: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+
+    size: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class FileVersionChunk(Base):
+    __tablename__ = "file_version_chunks"
+
+    file_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("file_versions.id"),
+        primary_key=True,
+    )
+
+    chunk_index: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+
+    chunk_hash: Mapped[str] = mapped_column(
+        ForeignKey("chunks.hash"),
+        nullable=False,
+    )
+
+
 class ChangeAction(str, enum.Enum):
     CREATE = "CREATE"
     UPDATE = "UPDATE"
@@ -123,7 +162,6 @@ class OutboxStatus(str, enum.Enum):
     PENDING = "PENDING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
-
 
 
 class OutboxEvent(Base):

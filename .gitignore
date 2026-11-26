@@ -48,3 +48,8 @@ worker*.log
 # Temporary Celery test files
 /celery-test.txt
 /celery_test.txt
+
+# Local sync integration folders
+/client-a/
+/client-b/
+/client-a-conflict-backup/

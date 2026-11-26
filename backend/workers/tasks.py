@@ -1,4 +1,6 @@
+from backend import dependencies
 from backend.db.database import SessionLocal
+from backend.services import gc
 from backend.workers.celery_app import celery_app
 from backend.workers.outbox_worker import process_event_batch
 
@@ -17,3 +19,8 @@ def publish_outbox() -> int:
             published += count
 
     return published
+
+
+@celery_app.task(name="backend.workers.tasks.collect_garbage")
+def collect_garbage() -> dict:
+    return gc.collect_garbage(SessionLocal, dependencies.get_storage())

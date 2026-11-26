@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from backend.db.database import engine
 
@@ -14,8 +15,13 @@ celery_app.conf.update(
     timezone="UTC",
     task_routes={
         "backend.workers.tasks.publish_outbox": {"queue": "journal"},
+        "backend.workers.tasks.collect_garbage": {"queue": "gc"},
     },
     beat_schedule={
+        "collect-garbage": {
+            "task": "backend.workers.tasks.collect_garbage",
+            "schedule": crontab(hour=3, minute=0),
+        },
         "publish-outbox": {
             "task": "backend.workers.tasks.publish_outbox",
             "schedule": 5.0,

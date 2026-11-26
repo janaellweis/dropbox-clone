@@ -5,8 +5,7 @@ services:
       POSTGRES_USER: dropbox
       POSTGRES_PASSWORD: dropbox_dev
       POSTGRES_DB: dropbox
-    ports:
-      - "127.0.0.1:5432:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,5 +14,77 @@ services:
       timeout: 3s
       retries: 5
 
+  migrate:
+    image: dropbox-clone:latest
+    command: python -m alembic upgrade head
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg://dropbox:dropbox_dev@db:5432/dropbox
+      BLOB_STORAGE_PATH: /app/data/blobs
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    image: dropbox-clone:latest
+    command: python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
+    environment: *backend_env
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - blob_data:/app/data/blobs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/docs')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    image: dropbox-clone:latest
+    command: python -m celery -A backend.workers.celery_app:celery_app worker --loglevel=info --queues=journal,gc --pool=solo
+    environment: *backend_env
+    volumes:
+      - blob_data:/app/data/blobs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    image: dropbox-clone:latest
+    command: python -m celery -A backend.workers.celery_app:celery_app beat --loglevel=info
+    environment: *backend_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  client-a:
+    image: dropbox-clone:latest
+    command: python -m client --folder /sync --server http://api:8001 --interval 5
+    volumes:
+      - ./client-a:/sync
+    depends_on:
+      api:
+        condition: service_healthy
+
+  client-b:
+    image: dropbox-clone:latest
+    command: python -m client --folder /sync --server http://api:8001 --interval 5
+    volumes:
+      - ./client-b:/sync
+    depends_on:
+      api:
+        condition: service_healthy
+  toxiproxy:
+    image: shopify/toxiproxy:latest
+    ports:
+      - "127.0.0.1:8474:8474"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  blob_data:
