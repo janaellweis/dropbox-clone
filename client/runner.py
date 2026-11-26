@@ -14,6 +14,7 @@ from client.detection.scanner import scan_folder, update_directories, update_sna
 from client.detection.tracker import ChangeTracker, PendingChanges
 from client.detection.watcher import FileWatcher
 from client.services.sync import sync_folder
+from client.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,69 +71,73 @@ def run(
     next_remote_poll = monotonic()
 
     try:
-        watcher.start()
-        logger.info("Watching %s", root)
+        with StateStore(root) as store:
+            watcher.start()
+            logger.info("Watching %s", root)
 
-        while not stopping.is_set():
-            if local_snapshot is None:
-                # Drain earlier notifications before scanning.
-                # Events arriving during the scan remain pending.
-                tracker.take_pending()
+            while not stopping.is_set():
+                if local_snapshot is None:
+                    # Drain earlier notifications before scanning.
+                    # Events arriving during the scan remain pending.
+                    tracker.take_pending()
 
-                try:
-                    local_snapshot = scan_folder(str(root))
-                except (FileChangedDuringScanError, OSError):
-                    logger.exception("Full scan failed; will retry")
+                    try:
+                        local_snapshot = scan_folder(str(root))
+                    except (FileChangedDuringScanError, OSError):
+                        logger.exception("Full scan failed; will retry")
 
-            if local_snapshot is not None:
-                try:
-                    local_snapshot = sync_folder(
-                        api,
-                        str(root),
-                        local_snapshot,
-                    )
-                    logger.info("Sync completed")
-                except SyncConflictError:
-                    logger.exception("Sync stopped due to unresolved conflict")
-                    raise
-                except httpx.TransportError:
-                    logger.warning("Network unavailable; retrying on next sync cycle")
-                    local_snapshot = None
-                except Exception:
-                    logger.exception("Sync stopped after failure")
-                    raise
-
-            if stopping.is_set():
-                break
-
-            # Schedule the next poll independently of local events.
-            now = monotonic()
-            if now >= next_remote_poll:
-                next_remote_poll = now + interval
-
-            timeout = max(0.0, next_remote_poll - monotonic())
-
-            if not tracker.wait_for_changes(timeout=timeout):
-                continue
-
-            if stopping.is_set():
-                break
-
-            pending = collect_changes(tracker)
-
-            if local_snapshot is not None:
-                try:
-                    if pending.directories:
-                        local_snapshot = update_directories(
-                            root, local_snapshot, pending.directories
+                if local_snapshot is not None:
+                    try:
+                        local_snapshot = sync_folder(
+                            api,
+                            str(root),
+                            local_snapshot,
+                            store=store,
                         )
-                    if pending.paths:
-                        local_snapshot = update_snapshot(
-                            root, local_snapshot, pending.paths
+                        logger.info("Sync completed")
+                    except SyncConflictError:
+                        logger.exception("Sync stopped due to unresolved conflict")
+                        raise
+                    except httpx.TransportError:
+                        logger.warning(
+                            "Network unavailable; retrying on next sync cycle"
                         )
-                except Exception:
-                    logger.exception("Targeted scan failed; stopping")
-                    raise
+                        local_snapshot = None
+                    except Exception:
+                        logger.exception("Sync stopped after failure")
+                        raise
+
+                if stopping.is_set():
+                    break
+
+                # Schedule the next poll independently of local events.
+                now = monotonic()
+                if now >= next_remote_poll:
+                    next_remote_poll = now + interval
+
+                timeout = max(0.0, next_remote_poll - monotonic())
+
+                if not tracker.wait_for_changes(timeout=timeout):
+                    continue
+
+                if stopping.is_set():
+                    break
+
+                pending = collect_changes(tracker)
+
+                if local_snapshot is not None:
+                    try:
+                        if pending.directories:
+                            local_snapshot = update_directories(
+                                root, local_snapshot, pending.directories
+                            )
+                        if pending.paths:
+                            local_snapshot = update_snapshot(
+                                root, local_snapshot, pending.paths
+                            )
+                    except Exception:
+                        logger.exception("Targeted scan failed; stopping")
+                        raise
 
     except KeyboardInterrupt:
         logger.info("Stopping synchronization")

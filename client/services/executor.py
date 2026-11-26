@@ -5,8 +5,9 @@ from client.api import DropboxClient
 from client.core.exceptions import SyncConflictError
 from client.services.conflicts import preserve_conflicted_copy
 from client.services.planner import PlannedAction, SyncAction
-from client.storage.downloads import download_verified, file_hash, safe_local_path
+from client.storage.downloads import download_verified
 from client.storage.durability import sync_directories
+from client.storage.filesystem import file_hash, safe_local_path
 
 
 class SyncExecutor:

@@ -288,3 +288,18 @@ they reduce unnecessary nesting and make the main logic easier to follow and mak
 
 ## Prymaid of doom
 pyramid of doom happens when code has too many nested conditions, making it harder to read and understand so each new condition adds another indentation level which will increase the complexity because we need to track multiple conditions at once.
+
+## Symlinks
+a file can have different types of links pointing to it without having to create another copy of its content. A symlink is a special file that points to another file or directory using its path and it works similarly to a shortcut.
+so if the original file is deleted or moved, the link can become broken.
+
+it can aslo point to a file outside the synchronization folder.
+
+we don't want the client to accidentally modify or delete files outside the folder it manages. We added symlink checks to protect filesystem operations, especially during downloads, renames, deletions, and crash recovery.
+
+## Hardlinks
+hard link gives the same underlying file another name so both names point to the same inode and file content, and doesn't create another copy of the data.
+
+Deleting one name doesn't delete the file content as long as another hard link exists, but they must be on the same filesystem.
+
+hard links were used during conflict preservation to avoid losing local content if the client crashes.

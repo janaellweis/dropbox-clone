@@ -34,3 +34,9 @@ def sync_existing_directories(directory: Path, root: Path) -> None:
         directory = directory.parent
 
     sync_directories(directory, root)
+
+
+def sync_file(path: Path) -> None:
+    """Persist the contents of an existing file."""
+    with path.open("rb") as file:
+        os.fsync(file.fileno())

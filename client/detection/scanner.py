@@ -1,14 +1,21 @@
-import hashlib
 from pathlib import Path
 
 from client.core.exceptions import FileChangedDuringScanError, UnsafeSyncPathError
-from client.storage.state import STATE_FILE
+from client.storage.filesystem import file_changed, file_hash
+from client.storage.schema import DATABASE_FILE, STATE_FILE
 
 
 def should_ignore(path: Path) -> bool:
     """Apply the shared file-inclusion policy to a path relative to the sync root."""
     return (
-        path.as_posix() == STATE_FILE
+        path.as_posix()
+        in {
+            STATE_FILE,
+            DATABASE_FILE,
+            f"{DATABASE_FILE}-wal",
+            f"{DATABASE_FILE}-shm",
+            f"{DATABASE_FILE}-journal",
+        }
         or ".sync-pending" in path.parts
         or "__pycache__" in path.parts
         or path.suffix == ".pyc"
@@ -40,25 +47,17 @@ def scan_file(root: Path, relative_path: str) -> dict | None:
         if not path.is_file():
             return None
         before = path.stat()
-        hasher = hashlib.sha256()
-
-        with path.open("rb") as file:
-            for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                hasher.update(chunk)
+        digest = file_hash(path)
 
         after = path.stat()
 
     except FileNotFoundError:
         return None
 
-    if (
-        before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or before.st_ctime_ns != after.st_ctime_ns
-    ):
+    if file_changed(before, after):
         raise FileChangedDuringScanError(f"File changed during scan: {relative_path}")
 
-    return {"hash": hasher.hexdigest(), "size": after.st_size}
+    return {"hash": digest, "size": after.st_size}
 
 
 def scan_tree(root: Path, folder: Path) -> dict:

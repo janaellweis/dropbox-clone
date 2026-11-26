@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 from client.core.exceptions import FileChangedDuringScanError
+from client.storage.filesystem import file_changed
 
 SNAPSHOT_DIR = ".sync-pending"
 CHUNK_SIZE = 1024 * 1024
@@ -58,11 +59,7 @@ def create_snapshot(
 
         after = source.stat()
 
-        if (
-            before.st_size != after.st_size
-            or before.st_mtime_ns != after.st_mtime_ns
-            or before.st_ctime_ns != after.st_ctime_ns
-        ):
+        if file_changed(before, after):
             raise FileChangedDuringScanError(
                 f"File changed while creating snapshot: {source}"
             )
