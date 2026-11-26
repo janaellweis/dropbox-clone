@@ -6,6 +6,7 @@ from client.core.exceptions import SyncConflictError
 from client.services.conflicts import preserve_conflicted_copy
 from client.services.planner import PlannedAction, SyncAction
 from client.storage.downloads import download_verified, file_hash, safe_local_path
+from client.storage.durability import sync_directories
 
 
 class SyncExecutor:
@@ -75,21 +76,35 @@ class SyncExecutor:
 
             case SyncAction.DELETE_LOCAL:
                 destination = safe_local_path(self.root, action.path)
+                if destination.is_symlink():
+                    raise SyncConflictError(f"Unsafe delete destination: {action.path}")
                 self._verify_unchanged(destination, expected_hash)
                 destination.unlink()
+                sync_directories(destination.parent, self.root)
                 return {}
 
             case SyncAction.RENAME_LOCAL:
                 target = self._require_target(action, "Rename")
                 source = safe_local_path(self.root, action.path)
                 destination = safe_local_path(self.root, target)
+                if source.is_symlink() or destination.is_symlink():
+                    raise SyncConflictError("Cannot rename a symlink")
+
                 self._verify_unchanged(source, expected_hash)
+
                 if destination.exists():
                     raise SyncConflictError(
                         f"Rename destination already exists: {target}"
                     )
+
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 source.rename(destination)
+
+                sync_directories(destination.parent, self.root)
+
+                if source.parent != destination.parent:
+                    sync_directories(source.parent, self.root)
+
                 return {}
 
             case SyncAction.PRESERVE_LOCAL:

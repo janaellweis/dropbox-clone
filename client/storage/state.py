@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
+from client.core.validation import is_sha256
+
 STATE_FILE = ".sync_state.json"
 SCHEMA_VERSION = 1
 
@@ -42,14 +44,6 @@ def _default_state() -> SyncState:
     }
 
 
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _validate_state(state: Any) -> SyncState:
     if not isinstance(state, dict):
         raise ValueError("Sync state must be a JSON object")
@@ -78,7 +72,7 @@ def _validate_state(state: Any) -> SyncState:
             size = operation.get("download_size")
             if (
                 operation.get("action") != "download"
-                or not _is_sha256(digest)
+                or not is_sha256(digest)
                 or type(size) is not int
                 or size < 0
             ):
@@ -100,7 +94,7 @@ def _validate_state(state: Any) -> SyncState:
             if (
                 not isinstance(target, str)
                 or not target
-                or not _is_sha256(operation.get("expected_hash"))
+                or not is_sha256(operation.get("expected_hash"))
                 or type(size) is not int
                 or size < 0
             ):

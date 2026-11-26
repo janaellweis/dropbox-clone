@@ -10,18 +10,10 @@ from client.detection.changes import detect_local_renames
 from client.detection.scanner import scan_file, scan_folder
 from client.remote import fetch_remote_updates
 from client.services.executor import SyncExecutor
-from client.services.operations import (
-    complete_remote_operation,
-    recover_pending_uploads,
-    run_action,
-)
+from client.services.operations import recover_pending, run_action
 from client.services.planner import SyncAction, plan_sync
 from client.storage.downloads import safe_local_path
 from client.storage.state import SyncState, load_state, save_state
-
-
-def _save(root: Path, state: SyncState) -> None:
-    save_state(str(root), state)
 
 
 def _apply_journal(
@@ -64,7 +56,7 @@ def _apply_journal(
     # refresh or persistence failure leaves the caller's state unchanged.
     refreshed = {**state, "remote_files": remote_files, "checkpoint": checkpoint}
     refreshed.pop("completed_requests", None)
-    _save(root, refreshed)
+    save_state(str(root), refreshed)
     state.clear()
     state.update(refreshed)
 
@@ -82,7 +74,7 @@ def sync_folder(
 
     # Recovery may change files on disk.
     had_pending = bool(state["pending_operations"])
-    recover_pending_uploads(root, state, executor, complete_remote_operation)
+    recover_pending(root, state, executor)
 
     if local_snapshot is None or had_pending:
         local_snapshot = scan_folder(str(root))
@@ -117,7 +109,7 @@ def sync_folder(
                 ):
                     state["files"].pop(path)
 
-            _save(root, state)
+            save_state(str(root), state)
             return local_snapshot
 
         action = actions[0]

@@ -12,6 +12,8 @@ from client.core.exceptions import (
     SyncConflictError,
     UnsafeSyncPathError,
 )
+from client.core.validation import is_sha256
+from client.storage.durability import sync_directories
 from shared.chunking import MAX_CHUNK_SIZE, chunk_file
 
 
@@ -76,12 +78,7 @@ def download_verified(
         verify_destination(destination, expected_local_hash)
         temporary.replace(destination)
 
-        if os.name == "posix":
-            directory_fd = os.open(destination.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+        sync_directories(destination.parent, root)
 
         return {
             "file_id": file_id,
@@ -109,6 +106,12 @@ def safe_local_path(root: Path, relative_path: str) -> Path:
 
     if not destination.resolve().is_relative_to(root.resolve()):
         raise UnsafeSyncPathError(f"Path escapes sync folder: {relative_path}")
+
+    for parent in destination.parents:
+        if parent == root:
+            break
+        if parent.is_symlink():
+            raise UnsafeSyncPathError(f"Symbolic link in sync path: {relative_path}")
 
     return destination
 
@@ -141,14 +144,6 @@ def verify_destination(
         raise SyncConflictError(f"Local file changed during download: {destination}")
 
 
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _validate_manifest(
     manifest: dict,
     file_id: str,
@@ -161,7 +156,7 @@ def _validate_manifest(
         or manifest.get("file_id") != file_id
         or type(manifest.get("version")) is not int
         or manifest["version"] != expected_version
-        or not _is_sha256(manifest.get("content_hash"))
+        or not is_sha256(manifest.get("content_hash"))
         or type(manifest.get("size")) is not int
         or manifest["size"] < 0
         or not isinstance(manifest.get("chunks"), list)
@@ -178,7 +173,7 @@ def _validate_manifest(
     for entry in manifest["chunks"]:
         if (
             not isinstance(entry, dict)
-            or not _is_sha256(entry.get("hash"))
+            or not is_sha256(entry.get("hash"))
             or type(entry.get("size")) is not int
             or not 0 <= entry["size"] <= MAX_CHUNK_SIZE
         ):

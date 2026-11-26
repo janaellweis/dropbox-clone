@@ -15,33 +15,15 @@ from client.services.conflicts import (
 )
 from client.services.executor import SyncExecutor
 from client.services.planner import PlannedAction, SyncAction
-from client.services.recovery import recover_pending_uploads
+from client.services.recovery import recover_pending_operations
 from client.storage.downloads import safe_local_path
 from client.storage.snapshots import create_snapshot
 from client.storage.state import RemoteFile, SyncedFile, SyncState, save_state
-
-REMOTE_ACTIONS = {
-    SyncAction.CREATE_REMOTE,
-    SyncAction.UPDATE_REMOTE,
-    SyncAction.DELETE_REMOTE,
-    SyncAction.RENAME_REMOTE,
-}
 
 UPLOAD_ACTIONS = {
     SyncAction.CREATE_REMOTE,
     SyncAction.UPDATE_REMOTE,
 }
-
-LOCAL_ACTIONS = {
-    SyncAction.DOWNLOAD,
-    SyncAction.DELETE_LOCAL,
-    SyncAction.RENAME_LOCAL,
-    SyncAction.PRESERVE_LOCAL,
-}
-
-
-def _save(root: Path, state: SyncState) -> None:
-    save_state(str(root), state)
 
 
 def _find_synced_file(state: SyncState, file_id: str) -> tuple[str, SyncedFile] | None:
@@ -84,7 +66,7 @@ def _prepare_remote_operation(
         )
 
     state["pending_operations"][request_id] = operation
-    _save(root, state)
+    save_state(str(root), state)
     return operation
 
 
@@ -166,9 +148,11 @@ def complete_remote_operation(
             _record_deleted_file(state, operation, result)
         case SyncAction.RENAME_REMOTE:
             _record_renamed_file(state, operation, result)
+        case _:
+            raise SyncConflictError("Unsupported remote completion action")
 
     state["pending_operations"].pop(operation["request_id"])
-    _save(root, state)
+    save_state(str(root), state)
 
     if operation["snapshot_path"]:
         safe_local_path(root, operation["snapshot_path"]).unlink(missing_ok=True)
@@ -218,7 +202,7 @@ def _prepare_local_operation(
         _verify_download_metadata(action, api, operation)
 
     state["pending_operations"][operation["request_id"]] = operation
-    _save(root, state)
+    save_state(str(root), state)
     return operation
 
 
@@ -250,8 +234,25 @@ def _complete_local_operation(
                 state["files"].pop(entry[0])
                 state["files"][action.target_path] = entry[1]
 
+        case _:
+            raise SyncConflictError("Unsupported local completion action")
+
     state["pending_operations"].pop(operation["request_id"])
-    _save(root, state)
+    save_state(str(root), state)
+
+
+def recover_pending(
+    root: Path,
+    state: SyncState,
+    executor: SyncExecutor,
+) -> None:
+    recover_pending_operations(
+        root,
+        state,
+        executor,
+        complete_remote_operation,
+        _complete_local_operation,
+    )
 
 
 def run_action(
@@ -261,8 +262,8 @@ def run_action(
     action: PlannedAction,
     api: DropboxClient,
 ) -> dict | None:
-    """Recover pending uploads, then execute the planned action."""
-    recover_pending_uploads(root, state, executor, complete_remote_operation)
+    """Recover pending operations, then execute the planned action."""
+    recover_pending(root, state, executor)
 
     match action.action:
         case (
